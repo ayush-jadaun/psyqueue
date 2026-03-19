@@ -1,0 +1,101 @@
+syntax = "proto3";
+
+package psyqueue.v1;
+
+option java_multiple_files = true;
+option java_package = "com.psyqueue.v1";
+option go_package = "psyqueue/v1;psyqueuev1";
+
+// WorkerService provides the gRPC API for remote workers to fetch, acknowledge,
+// and reject jobs from PsyQueue.
+service WorkerService {
+  // FetchJobs dequeues one or more jobs from a named queue.
+  rpc FetchJobs (FetchRequest) returns (FetchResponse);
+
+  // Ack marks a job as successfully completed.
+  rpc Ack (AckRequest) returns (AckResponse);
+
+  // Nack marks a job as failed, optionally requeuing it with a delay.
+  rpc Nack (NackRequest) returns (NackResponse);
+
+  // Heartbeat keeps a worker's session alive so the server knows it is still processing.
+  rpc Heartbeat (HeartbeatRequest) returns (HeartbeatResponse);
+}
+
+message FetchRequest {
+  // Name of the queue to dequeue from.
+  string queue = 1;
+
+  // Maximum number of jobs to return in a single call.
+  int32 count = 2;
+}
+
+message JobMessage {
+  // Unique job identifier (ULID).
+  string id = 1;
+
+  // Queue the job belongs to.
+  string queue = 2;
+
+  // Human-readable job name / type.
+  string name = 3;
+
+  // JSON-encoded job payload.
+  string payload = 4;
+
+  // Opaque token required to Ack or Nack the job (exactly-once guard).
+  string completion_token = 5;
+
+  // Current attempt number (1-based).
+  int32 attempt = 6;
+
+  // Maximum number of retries allowed for this job.
+  int32 max_retries = 7;
+}
+
+message FetchResponse {
+  repeated JobMessage jobs = 1;
+}
+
+message AckRequest {
+  // ID of the job to acknowledge.
+  string job_id = 1;
+
+  // Completion token received from FetchJobs.
+  string completion_token = 2;
+}
+
+message AckResponse {
+  // True if the job was already completed by another worker (duplicate ack).
+  bool already_completed = 1;
+}
+
+message NackRequest {
+  // ID of the job to reject.
+  string job_id = 1;
+
+  // Whether to requeue the job for another attempt.
+  bool requeue = 2;
+
+  // Delay in seconds before the job becomes visible again.
+  int32 delay = 3;
+
+  // Human-readable reason for the failure.
+  string reason = 4;
+}
+
+message NackResponse {
+  bool ok = 1;
+}
+
+message HeartbeatRequest {
+  // Unique worker identifier.
+  string worker_id = 1;
+}
+
+message HeartbeatResponse {
+  bool ok = 1;
+
+  // Server timestamp (Unix milliseconds) at the time the heartbeat was received.
+  int64 timestamp = 2;
+}

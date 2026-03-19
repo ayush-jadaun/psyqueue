@@ -1,4 +1,7 @@
 import express, { type Request, type Response, type NextFunction } from 'express'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import fs from 'node:fs'
 import type { BackendAdapter, JobFilter, JobStatus } from 'psyqueue'
 import type http from 'node:http'
 
@@ -137,6 +140,17 @@ export function createDashboardServer(opts: DashboardServerOpts): {
       res.status(500).json({ error: String(err) })
     }
   })
+
+  // Serve built UI static files
+  const currentDir = path.dirname(fileURLToPath(import.meta.url))
+  const uiDir = path.resolve(currentDir, '..', 'dist', 'ui')
+  if (fs.existsSync(uiDir)) {
+    app.use(express.static(uiDir))
+    // SPA fallback — serve index.html for any non-API route
+    app.get('*', (_req: Request, res: Response) => {
+      res.sendFile(path.join(uiDir, 'index.html'))
+    })
+  }
 
   return {
     app,
