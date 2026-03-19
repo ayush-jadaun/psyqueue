@@ -1501,7 +1501,7 @@ When a single tenant suddenly enqueues a massive number of jobs:
 The tenancy plugin automatically tags all metrics with `tenantId`:
 
 ```ts
-q.on('metrics', (m) => {
+q.events.on('metrics', (m) => {
   // Available per-tenant metrics:
   // m.tenantId     — which tenant
   // m.queue        — which queue
