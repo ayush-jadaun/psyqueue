@@ -144,9 +144,25 @@ export class WorkerPool {
    */
   private async dequeueLoop(): Promise<void> {
     let queueWasEmpty = false
+    let lastStaleCheck = Date.now()
 
     while (!this.stopping) {
       try {
+        // Periodically check for stale active jobs (every 30 seconds)
+        if (Date.now() - lastStaleCheck > 30_000) {
+          if (this.backend.recoverStaleJobs) {
+            try {
+              const recovered = await this.backend.recoverStaleJobs(this.queue, 60_000)
+              if (recovered.length > 0) {
+                this.eventBus.emit('job:recovered', { queue: this.queue, count: recovered.length, jobIds: recovered })
+              }
+            } catch {
+              // Stale recovery is best-effort, don't crash the loop
+            }
+          }
+          lastStaleCheck = Date.now()
+        }
+
         // First, dispatch any buffered jobs without touching Redis
         if (this.jobBuffer.length > 0) {
           await this.waitForCapacity()

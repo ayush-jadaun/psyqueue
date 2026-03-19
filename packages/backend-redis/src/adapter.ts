@@ -158,10 +158,11 @@ export function computePendingScore(priority: number, createdAt: Date): number {
 
 // ─── Lua Scripts ──────────────────────────────────────────────────────────────
 
-// Dequeue Lua: RPOP N job IDs from the ready list, activate each one atomically
+// Dequeue Lua: check priority sorted set FIRST, then RPOP from ready list for remaining
 // KEYS[1] = ready list key
 // KEYS[2] = active sorted set key
 // KEYS[3] = job hash key prefix
+// KEYS[4] = priority sorted set key
 // ARGV[1] = count
 // ARGV[2] = started_at ISO string
 // Returns: array of [id, token, jsonEncodedHashData, ...] triplets
@@ -169,13 +170,36 @@ export const DEQUEUE_SCRIPT = `
 local ready_key = KEYS[1]
 local active_key = KEYS[2]
 local hash_prefix = KEYS[3]
+local priority_key = KEYS[4]
 local count = tonumber(ARGV[1])
 local started_at = ARGV[2]
 
 local results = {}
 local time = redis.call('TIME')
+local now_ms = tostring(tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000))
+local activated = 0
 
-for i = 1, count do
+-- Step 1: Pop high-priority items from sorted set first (lowest score = highest priority)
+local priority_items = redis.call('ZPOPMIN', priority_key, count)
+for i = 1, #priority_items, 2 do
+  local id = priority_items[i]
+  local hash_key = hash_prefix .. id
+  local exists = redis.call('EXISTS', hash_key)
+  if exists == 1 then
+    local token = id .. ':' .. time[1] .. time[2]
+    redis.call('SADD', active_key, id)
+    redis.call('HSET', hash_key, 'status', 'active', 'started_at', started_at, 'completion_token', token, '_started_ms', now_ms)
+    local data = redis.call('HGETALL', hash_key)
+    table.insert(results, id)
+    table.insert(results, token)
+    table.insert(results, cjson.encode(data))
+    activated = activated + 1
+  end
+end
+
+-- Step 2: If we still need more, pop from ready list (FIFO for priority=0 jobs)
+local remaining = count - activated
+for i = 1, remaining do
   local id = redis.call('RPOP', ready_key)
   if not id then break end
 
@@ -184,7 +208,7 @@ for i = 1, count do
   if exists == 1 then
     local token = id .. ':' .. time[1] .. time[2]
     redis.call('SADD', active_key, id)
-    redis.call('HSET', hash_key, 'status', 'active', 'started_at', started_at, 'completion_token', token)
+    redis.call('HSET', hash_key, 'status', 'active', 'started_at', started_at, 'completion_token', token, '_started_ms', now_ms)
     local data = redis.call('HGETALL', hash_key)
     table.insert(results, id)
     table.insert(results, token)
@@ -212,8 +236,9 @@ local exists = redis.call('EXISTS', hash_key)
 if exists == 0 then return nil end
 
 local t = redis.call('TIME')
+local now_ms = tostring(tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000))
 redis.call('SADD', active_key, job_id)
-redis.call('HSET', hash_key, 'status', 'active', 'started_at', started_at, 'completion_token', token)
+redis.call('HSET', hash_key, 'status', 'active', 'started_at', started_at, 'completion_token', token, '_started_ms', now_ms)
 return cjson.encode(redis.call('HGETALL', hash_key))
 `
 
@@ -246,6 +271,7 @@ return 1
 // KEYS[3] = ready list key (for fetching next)
 // KEYS[4] = active set key
 // KEYS[5] = job hash prefix
+// KEYS[6] = priority sorted set key
 // ARGV[1] = completion token
 // ARGV[2] = completed_at
 // ARGV[3] = current job id
@@ -256,6 +282,7 @@ local prefix = KEYS[2]
 local ready_key = KEYS[3]
 local active_set = KEYS[4]
 local hash_prefix = KEYS[5]
+local priority_key = KEYS[6]
 local token = ARGV[1]
 local completed_at = ARGV[2]
 local job_id = ARGV[3]
@@ -272,8 +299,15 @@ if not queue then return {0} end
 redis.call('SREM', active_set, job_id)
 redis.call('HSET', hash_key, 'status', 'completed', 'completed_at', completed_at)
 
--- Step 2: Fetch next job from ready list
-local next_id = redis.call('RPOP', ready_key)
+-- Step 2: Fetch next job — check priority sorted set first, then ready list
+local next_id = nil
+local priority_items = redis.call('ZPOPMIN', priority_key, 1)
+if #priority_items >= 2 then
+  next_id = priority_items[1]
+else
+  next_id = redis.call('RPOP', ready_key)
+end
+
 if not next_id then
   return {1}
 end
@@ -286,9 +320,10 @@ if exists == 0 then
 end
 
 local t = redis.call('TIME')
+local now_ms = tostring(tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000))
 local next_token = next_id .. ':' .. t[1] .. t[2]
 redis.call('SADD', active_set, next_id)
-redis.call('HSET', next_hash, 'status', 'active', 'started_at', completed_at, 'completion_token', next_token)
+redis.call('HSET', next_hash, 'status', 'active', 'started_at', completed_at, 'completion_token', next_token, '_started_ms', now_ms)
 local data = redis.call('HGETALL', next_hash)
 
 return {1, next_id, next_token, cjson.encode(data)}
@@ -338,11 +373,15 @@ if delay_ms > 0 then
   return 1
 end
 
--- Immediate retry: push directly to the ready list
+-- Immediate retry: priority jobs go to sorted set, normal jobs to ready list
 redis.call('HSET', hash_key, 'status', 'pending', 'attempt', tostring(new_attempt), 'run_at', '')
 if priority > 0 then
-  -- High-priority requeues go to the front of the ready list
-  redis.call('LPUSH', prefix .. queue .. ':ready', job_id)
+  -- High-priority requeues go to the priority sorted set
+  local created_at_str = redis.call('HGET', hash_key, 'created_at')
+  local t = redis.call('TIME')
+  local now_ms = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+  local score = (-priority * 10000000000000) + now_ms
+  redis.call('ZADD', prefix .. queue .. ':priority', score, job_id)
 else
   redis.call('RPUSH', prefix .. queue .. ':ready', job_id)
 end
@@ -372,29 +411,18 @@ end
 return promoted
 `
 
-// Enqueue with priority: ZADD to priority sorted set + immediately promote all to ready list
+// Enqueue with priority: ZADD to priority sorted set (no promotion — dequeue handles it)
 // KEYS[1] = priority sorted set key
-// KEYS[2] = ready list key
 // ARGV[1] = score
 // ARGV[2] = job_id
-// Returns: number promoted
+// Returns: 1
 export const ENQUEUE_PRIORITY_SCRIPT = `
 local priority_key = KEYS[1]
-local ready_key = KEYS[2]
 local score = tonumber(ARGV[1])
 local job_id = ARGV[2]
 
 redis.call('ZADD', priority_key, score, job_id)
-
--- Promote all from priority set to front of ready list (maintains priority order)
-local ids = redis.call('ZPOPMIN', priority_key, 100)
-local promoted = 0
-for i = 1, #ids, 2 do
-  local id = ids[i]
-  redis.call('LPUSH', ready_key, id)
-  promoted = promoted + 1
-end
-return promoted
+return 1
 `
 
 // Poll scheduled: move due jobs from scheduled set to the ready list
@@ -426,16 +454,10 @@ for _, id in ipairs(ids) do
 
   local ready_key = prefix .. queue .. ':ready'
   if priority > 0 then
-    -- Priority jobs: ZADD to priority sorted set, then promote to front of ready list
-    local created_at_str = redis.call('HGET', hash_key, 'created_at')
+    -- Priority jobs: ZADD to priority sorted set (dequeue handles priority ordering)
     local score = (-priority * 10000000000000) + now_ms
     local pkey = prefix .. queue .. ':priority'
     redis.call('ZADD', pkey, score, id)
-    -- Promote all from priority set
-    local pids = redis.call('ZPOPMIN', pkey, 100)
-    for pi = 1, #pids, 2 do
-      redis.call('LPUSH', ready_key, pids[pi])
-    end
   else
     redis.call('RPUSH', ready_key, id)
   end
@@ -453,6 +475,7 @@ export const BATCH_ACTIVATE_SCRIPT = `
 local active_key = KEYS[1]
 local started_at = ARGV[1]
 local t = redis.call('TIME')
+local now_ms = tostring(tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000))
 local results = {}
 
 for i = 2, #KEYS do
@@ -461,12 +484,70 @@ for i = 2, #KEYS do
   local job_id = redis.call('HGET', hash_key, 'id')
   if job_id then
     redis.call('SADD', active_key, job_id)
-    redis.call('HSET', hash_key, 'status', 'active', 'started_at', started_at, 'completion_token', token)
+    redis.call('HSET', hash_key, 'status', 'active', 'started_at', started_at, 'completion_token', token, '_started_ms', now_ms)
     table.insert(results, token)
     table.insert(results, cjson.encode(redis.call('HGETALL', hash_key)))
   end
 end
 return results
+`
+
+// Recover stale jobs: scan active set, check started_at, move back to ready/priority
+// KEYS[1] = active set key
+// KEYS[2] = hash prefix
+// KEYS[3] = ready list key
+// KEYS[4] = priority sorted set key
+// ARGV[1] = max age in ms (jobs older than this are considered stale)
+// ARGV[2] = current time in ms
+// Returns: array of recovered job IDs
+export const RECOVER_STALE_SCRIPT = `
+local active_key = KEYS[1]
+local hash_prefix = KEYS[2]
+local ready_key = KEYS[3]
+local priority_key = KEYS[4]
+local max_age_ms = tonumber(ARGV[1])
+local now_ms = tonumber(ARGV[2])
+local cutoff_ms = now_ms - max_age_ms
+
+local members = redis.call('SMEMBERS', active_key)
+local recovered = {}
+
+for _, job_id in ipairs(members) do
+  local hash_key = hash_prefix .. job_id
+  local started_at = redis.call('HGET', hash_key, 'started_at')
+  if started_at then
+    -- Parse ISO date to approximate ms timestamp
+    -- Redis doesn't have native date parsing, so we use a simple approach:
+    -- Convert ISO string year-month-day-hour-min-sec to a comparable number
+    -- Instead, we store started_at as ms alongside the ISO string
+    -- For now, use the job hash 'started_at' field which is ISO, and compare with
+    -- a timestamp we compute from the caller
+    local status = redis.call('HGET', hash_key, 'status')
+    if status == 'active' then
+      -- We need a numeric timestamp. Check if we have a _started_ms field,
+      -- otherwise parse the ISO date (approximate: just compare the string)
+      local started_ms = redis.call('HGET', hash_key, '_started_ms')
+      if started_ms then
+        started_ms = tonumber(started_ms)
+        if started_ms < cutoff_ms then
+          -- This job is stale — move back to pending
+          redis.call('SREM', active_key, job_id)
+          local priority = tonumber(redis.call('HGET', hash_key, 'priority') or '0')
+          redis.call('HSET', hash_key, 'status', 'pending', 'started_at', '', '_started_ms', '')
+          if priority > 0 then
+            local score = (-priority * 10000000000000) + now_ms
+            redis.call('ZADD', priority_key, score, job_id)
+          else
+            redis.call('RPUSH', ready_key, job_id)
+          end
+          table.insert(recovered, job_id)
+        end
+      end
+    end
+  end
+end
+
+return recovered
 `
 
 export class RedisBackendAdapter implements BackendAdapter {
@@ -583,15 +664,14 @@ export class RedisBackendAdapter implements BackendAdapter {
     const hash = serializeJobToHash(job)
 
     if (job.priority > 0) {
-      // Priority path: HSET + ZADD to priority sorted set + promote to ready list
+      // Priority path: HSET + ZADD to priority sorted set (dequeue handles ordering)
       const score = computePendingScore(job.priority, job.createdAt)
       const pipeline = client.pipeline()
       pipeline.hset(this.jobKey(job.id), hash)
       pipeline.eval(
         ENQUEUE_PRIORITY_SCRIPT,
-        2,
+        1,
         this.priorityKey(job.queue),
-        this.readyKey(job.queue),
         String(score),
         job.id,
       )
@@ -633,14 +713,13 @@ export class RedisBackendAdapter implements BackendAdapter {
       pipeline.rpush(key, ...ids)
     }
 
-    // Priority jobs: ZADD + promote for each
+    // Priority jobs: ZADD to priority sorted set (dequeue handles ordering)
     for (const job of priorityJobs) {
       const score = computePendingScore(job.priority, job.createdAt)
       pipeline.eval(
         ENQUEUE_PRIORITY_SCRIPT,
-        2,
+        1,
         this.priorityKey(job.queue),
-        this.readyKey(job.queue),
         String(score),
         job.id,
       )
@@ -654,13 +733,14 @@ export class RedisBackendAdapter implements BackendAdapter {
     const client = this.getClient()
     const startedAt = new Date().toISOString()
 
-    // Single Lua call: RPOP N from ready list + activate each
+    // Single Lua call: check priority sorted set first, then RPOP from ready list
     const results = await client.eval(
       DEQUEUE_SCRIPT,
-      3,
+      4,
       this.readyKey(queue),
       this.activeKey(queue),
       this.jobHashPrefix(),
+      this.priorityKey(queue),
       String(count),
       startedAt,
     ) as string[] | null
@@ -713,12 +793,13 @@ export class RedisBackendAdapter implements BackendAdapter {
 
     const result = await client.eval(
       ACK_AND_FETCH_SCRIPT,
-      5,
+      6,
       this.jobKey(jobId),
       this.keyPrefix(),
       this.readyKey(queue),
       this.activeKey(queue),
       this.jobHashPrefix(),
+      this.priorityKey(queue),
       completionToken ?? '',
       completedAt,
       jobId,
@@ -1025,6 +1106,24 @@ export class RedisBackendAdapter implements BackendAdapter {
     return results!.map(([err, val]: [Error | null, unknown]) => ({
       alreadyCompleted: err != null || val === 0,
     }))
+  }
+
+  async recoverStaleJobs(queue: string, maxAgeMs: number): Promise<string[]> {
+    const client = this.getClient()
+    const nowMs = Date.now()
+
+    const recovered = await client.eval(
+      RECOVER_STALE_SCRIPT,
+      4,
+      this.activeKey(queue),
+      this.jobHashPrefix(),
+      this.readyKey(queue),
+      this.priorityKey(queue),
+      String(maxAgeMs),
+      String(nowMs),
+    ) as string[]
+
+    return recovered ?? []
   }
 
   private async createBlockingClient(): Promise<any> {

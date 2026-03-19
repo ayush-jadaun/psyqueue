@@ -169,6 +169,13 @@ export interface BackendAdapter {
    * Returns ack result for current job and optionally the next dequeued job.
    */
   ackAndFetch?(jobId: string, completionToken: string | undefined, queue: string): Promise<{ ackResult: AckResult; nextJob: DequeuedJob | null }>
+
+  /**
+   * Recover stale active jobs that have been running longer than maxAgeMs.
+   * Moves them back to the ready queue for re-processing.
+   * Returns the IDs of recovered jobs.
+   */
+  recoverStaleJobs?(queue: string, maxAgeMs: number): Promise<string[]>
 }
 
 // === Event Types ===

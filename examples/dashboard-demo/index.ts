@@ -5,14 +5,14 @@
  * Then open: http://localhost:4000
  */
 
-import { PsyQueue } from 'psyqueue'
-import { sqlite } from '@psyqueue/backend-sqlite'
-import { dashboard } from '@psyqueue/dashboard'
+import { PsyQueue } from '../../packages/core/src/index.js'
+import { sqlite } from '../../packages/backend-sqlite/src/index.js'
+import { createDashboardServer } from '../../packages/dashboard/src/server.js'
 
 async function main() {
   const q = new PsyQueue()
   q.use(sqlite({ path: ':memory:' }))
-  q.use(dashboard({ port: 4000, getBackend: () => (q as any).backend }))
+  // Dashboard started separately after q.start()
 
   // Register some handlers
   q.handle('email.send', async (ctx) => {
@@ -32,6 +32,10 @@ async function main() {
   })
 
   await q.start()
+
+  // Start dashboard server
+  const dash = createDashboardServer({ port: 4000, getBackend: () => (q as any).backend })
+  await dash.start()
   console.log('\n  Dashboard running at http://localhost:4000\n')
 
   // Seed some jobs to make the dashboard interesting
@@ -75,6 +79,9 @@ async function main() {
   console.log('    POST http://localhost:4000/api/jobs/:id/retry')
   console.log('\n  Dashboard UI: http://localhost:4000/\n')
   console.log('  Press Ctrl+C to stop.\n')
+
+  // Keep process alive — dashboard server is listening
+  await new Promise(() => {})
 }
 
 main().catch(console.error)
