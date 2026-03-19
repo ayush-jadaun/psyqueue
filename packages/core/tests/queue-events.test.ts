@@ -14,12 +14,13 @@ beforeAll(async () => {
   try {
     const IORedis = (await import('ioredis')).default
     const Redis = (IORedis as any).default ?? IORedis
-    const client = new Redis(REDIS)
+    const client = new Redis({ host: '127.0.0.1', port: 6381, connectTimeout: 2000, lazyConnect: true, maxRetriesPerRequest: 1, retryStrategy: () => null })
+    await client.connect()
     await client.ping()
     await client.quit()
     redisAvailable = true
   } catch {
-    // Redis not available — tests will be skipped
+    // Redis not available on port 6381 — tests will be skipped
   }
 })
 
