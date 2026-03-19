@@ -54,27 +54,32 @@ describe('RedisBackendAdapter – serialization (always runs)', () => {
     })
     const hash = serializeJobToHash(job)
 
+    // Hot fields remain as individual hash fields
     expect(hash['id']).toBe(job.id)
     expect(hash['queue']).toBe('default')
     expect(hash['name']).toBe('test-job')
     expect(hash['payload']).toBe(JSON.stringify({ nested: { val: 42 } }))
     expect(hash['status']).toBe('pending')
     expect(hash['priority']).toBe('0')
-    expect(hash['tenant_id']).toBe('tenant-1')
     expect(hash['max_retries']).toBe('3')
     expect(hash['attempt']).toBe('1')
-    expect(hash['backoff']).toBe('exponential')
-    expect(hash['backoff_base']).toBe('1000')
-    expect(hash['backoff_cap']).toBe('30000')
-    expect(hash['backoff_jitter']).toBe('1')
-    expect(hash['meta']).toBe(JSON.stringify({ key: 'value' }))
     expect(hash['completion_token']).toBe('')
+
+    // Cold fields are packed into _ext JSON blob
+    const ext = JSON.parse(hash['_ext']!)
+    expect(ext.tenant_id).toBe('tenant-1')
+    expect(ext.backoff).toBe('exponential')
+    expect(ext.backoff_base).toBe(1000)
+    expect(ext.backoff_cap).toBe(30000)
+    expect(ext.backoff_jitter).toBe(true)
+    expect(ext.meta).toEqual({ key: 'value' })
   })
 
   it('serializeJobToHash stores function backoff as "custom"', () => {
     const job = makeJob({ backoff: ((_attempt: number) => 1000) as unknown as Job['backoff'] })
     const hash = serializeJobToHash(job)
-    expect(hash['backoff']).toBe('custom')
+    const ext = JSON.parse(hash['_ext']!)
+    expect(ext.backoff).toBe('custom')
   })
 
   it('serializeJobToHash stores optional dates as ISO strings', () => {
@@ -82,19 +87,22 @@ describe('RedisBackendAdapter – serialization (always runs)', () => {
     const deadline = new Date('2025-06-01T00:00:00Z')
     const job = makeJob({ runAt, deadline })
     const hash = serializeJobToHash(job)
-    expect(hash['run_at']).toBe(runAt.toISOString())
-    expect(hash['deadline']).toBe(deadline.toISOString())
+    const ext = JSON.parse(hash['_ext']!)
+    expect(ext.run_at).toBe(runAt.toISOString())
+    expect(ext.deadline).toBe(deadline.toISOString())
   })
 
-  it('serializeJobToHash stores empty string for missing optional fields', () => {
+  it('serializeJobToHash stores empty/absent for missing optional fields in _ext', () => {
     const job = makeJob()
     const hash = serializeJobToHash(job)
-    expect(hash['tenant_id']).toBe('')
-    expect(hash['run_at']).toBe('')
-    expect(hash['deadline']).toBe('')
-    expect(hash['workflow_id']).toBe('')
-    expect(hash['result']).toBe('')
-    expect(hash['error']).toBe('')
+    const ext = JSON.parse(hash['_ext']!)
+    // Optional fields with no value are omitted from _ext
+    expect(ext.tenant_id).toBeUndefined()
+    expect(ext.run_at).toBeUndefined()
+    expect(ext.deadline).toBeUndefined()
+    expect(ext.workflow_id).toBeUndefined()
+    expect(ext.result).toBeUndefined()
+    expect(ext.error).toBeUndefined()
   })
 
   it('deserializeJobFromHash restores Job from flat string map', () => {
@@ -161,7 +169,31 @@ describe('RedisBackendAdapter – serialization (always runs)', () => {
   it('deserializeJobFromHash parses error JSON', () => {
     const job = makeJob()
     const hash = serializeJobToHash(job)
-    hash['error'] = JSON.stringify({ message: 'boom', retryable: false })
+    // Inject error into _ext blob (new packed format)
+    const ext = JSON.parse(hash['_ext']!)
+    ext.error = { message: 'boom', retryable: false }
+    hash['_ext'] = JSON.stringify(ext)
+    const restored = deserializeJobFromHash(hash)
+    expect(restored.error).toEqual({ message: 'boom', retryable: false })
+  })
+
+  it('deserializeJobFromHash parses error JSON from legacy format (no _ext)', () => {
+    // Legacy format: individual hash fields, no _ext
+    const hash: Record<string, string> = {
+      id: 'legacy-1',
+      queue: 'default',
+      name: 'test',
+      payload: '{}',
+      status: 'failed',
+      priority: '0',
+      max_retries: '3',
+      attempt: '1',
+      backoff: 'exponential',
+      timeout: '30000',
+      created_at: new Date().toISOString(),
+      error: JSON.stringify({ message: 'boom', retryable: false }),
+      meta: '{}',
+    }
     const restored = deserializeJobFromHash(hash)
     expect(restored.error).toEqual({ message: 'boom', retryable: false })
   })

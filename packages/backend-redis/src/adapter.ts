@@ -28,49 +28,78 @@ export interface RedisAdapterOpts {
 type JobHash = Record<string, string>
 
 export function serializeJobToHash(job: Job): JobHash {
-  return {
+  // Hot fields stay as individual hash fields for Lua script access
+  const hash: JobHash = {
     id: job.id,
     queue: job.queue,
     name: job.name,
     payload: JSON.stringify(job.payload),
     status: job.status,
     priority: String(job.priority),
-    tenant_id: job.tenantId ?? '',
-    idempotency_key: job.idempotencyKey ?? '',
-    schema_version: job.schemaVersion != null ? String(job.schemaVersion) : '',
-    max_retries: String(job.maxRetries),
     attempt: String(job.attempt),
-    backoff: typeof job.backoff === 'function' ? 'custom' : job.backoff,
-    backoff_base: job.backoffBase != null ? String(job.backoffBase) : '',
-    backoff_cap: job.backoffCap != null ? String(job.backoffCap) : '',
-    backoff_jitter: job.backoffJitter != null ? (job.backoffJitter ? '1' : '0') : '',
-    timeout: String(job.timeout),
-    workflow_id: job.workflowId ?? '',
-    step_id: job.stepId ?? '',
-    parent_job_id: job.parentJobId ?? '',
-    trace_id: job.traceId ?? '',
-    span_id: job.spanId ?? '',
-    run_at: job.runAt ? job.runAt.toISOString() : '',
-    cron: job.cron ?? '',
-    deadline: job.deadline ? job.deadline.toISOString() : '',
-    result: job.result != null ? JSON.stringify(job.result) : '',
-    error: job.error != null ? JSON.stringify(job.error) : '',
-    meta: JSON.stringify(job.meta ?? {}),
+    max_retries: String(job.maxRetries),
     completion_token: '',
     created_at: job.createdAt.toISOString(),
     started_at: job.startedAt ? job.startedAt.toISOString() : '',
     completed_at: job.completedAt ? job.completedAt.toISOString() : '',
   }
+
+  // Cold fields packed into a single _ext JSON blob
+  const ext: Record<string, unknown> = {}
+  if (job.tenantId != null) ext.tenant_id = job.tenantId
+  if (job.idempotencyKey != null) ext.idempotency_key = job.idempotencyKey
+  if (job.schemaVersion != null) ext.schema_version = job.schemaVersion
+  ext.backoff = typeof job.backoff === 'function' ? 'custom' : job.backoff
+  if (job.backoffBase != null) ext.backoff_base = job.backoffBase
+  if (job.backoffCap != null) ext.backoff_cap = job.backoffCap
+  if (job.backoffJitter != null) ext.backoff_jitter = job.backoffJitter
+  ext.timeout = job.timeout
+  if (job.workflowId != null) ext.workflow_id = job.workflowId
+  if (job.stepId != null) ext.step_id = job.stepId
+  if (job.parentJobId != null) ext.parent_job_id = job.parentJobId
+  if (job.traceId != null) ext.trace_id = job.traceId
+  if (job.spanId != null) ext.span_id = job.spanId
+  if (job.runAt) ext.run_at = job.runAt.toISOString()
+  if (job.cron != null) ext.cron = job.cron
+  if (job.deadline) ext.deadline = job.deadline.toISOString()
+  if (job.result != null) ext.result = job.result
+  if (job.error != null) ext.error = job.error
+  ext.meta = job.meta ?? {}
+
+  hash['_ext'] = JSON.stringify(ext)
+  return hash
 }
 
 export function deserializeJobFromHash(hash: JobHash): Job {
-  const backoffRaw = hash['backoff'] ?? 'exponential'
-  const backoff: BackoffStrategy = (backoffRaw === 'fixed' || backoffRaw === 'exponential' || backoffRaw === 'linear')
-    ? backoffRaw
-    : 'exponential'
+  // Unpack _ext blob if present (new packed format), fall back to individual fields (legacy)
+  const ext: Record<string, unknown> = hash['_ext'] ? JSON.parse(hash['_ext']) : null
 
-  const backoffJitterRaw = hash['backoff_jitter']
-  const backoffJitter = backoffJitterRaw === '1' ? true : backoffJitterRaw === '0' ? false : undefined
+  let backoff: BackoffStrategy
+  let backoffJitter: boolean | undefined
+  let backoffBase: number | undefined
+  let backoffCap: number | undefined
+  let timeout: number
+
+  if (ext) {
+    // New packed format
+    const backoffRaw = (ext.backoff as string) ?? 'exponential'
+    backoff = (backoffRaw === 'fixed' || backoffRaw === 'exponential' || backoffRaw === 'linear')
+      ? backoffRaw : 'exponential'
+    backoffJitter = ext.backoff_jitter != null ? Boolean(ext.backoff_jitter) : undefined
+    backoffBase = ext.backoff_base != null ? Number(ext.backoff_base) : undefined
+    backoffCap = ext.backoff_cap != null ? Number(ext.backoff_cap) : undefined
+    timeout = Number(ext.timeout ?? 30000)
+  } else {
+    // Legacy individual fields
+    const backoffRaw = hash['backoff'] ?? 'exponential'
+    backoff = (backoffRaw === 'fixed' || backoffRaw === 'exponential' || backoffRaw === 'linear')
+      ? backoffRaw : 'exponential'
+    const backoffJitterRaw = hash['backoff_jitter']
+    backoffJitter = backoffJitterRaw === '1' ? true : backoffJitterRaw === '0' ? false : undefined
+    backoffBase = hash['backoff_base'] ? parseInt(hash['backoff_base'], 10) : undefined
+    backoffCap = hash['backoff_cap'] ? parseInt(hash['backoff_cap'], 10) : undefined
+    timeout = parseInt(hash['timeout'] ?? '30000', 10)
+  }
 
   return {
     id: hash['id'] ?? '',
@@ -79,27 +108,39 @@ export function deserializeJobFromHash(hash: JobHash): Job {
     payload: JSON.parse(hash['payload'] ?? 'null'),
     status: (hash['status'] ?? 'pending') as Job['status'],
     priority: parseInt(hash['priority'] ?? '0', 10),
-    tenantId: hash['tenant_id'] || undefined,
-    idempotencyKey: hash['idempotency_key'] || undefined,
-    schemaVersion: hash['schema_version'] ? parseInt(hash['schema_version'], 10) : undefined,
+    tenantId: ext ? (ext.tenant_id as string | undefined) : (hash['tenant_id'] || undefined),
+    idempotencyKey: ext ? (ext.idempotency_key as string | undefined) : (hash['idempotency_key'] || undefined),
+    schemaVersion: ext
+      ? (ext.schema_version != null ? Number(ext.schema_version) : undefined)
+      : (hash['schema_version'] ? parseInt(hash['schema_version'], 10) : undefined),
     maxRetries: parseInt(hash['max_retries'] ?? '3', 10),
     attempt: parseInt(hash['attempt'] ?? '1', 10),
     backoff,
-    backoffBase: hash['backoff_base'] ? parseInt(hash['backoff_base'], 10) : undefined,
-    backoffCap: hash['backoff_cap'] ? parseInt(hash['backoff_cap'], 10) : undefined,
+    backoffBase,
+    backoffCap,
     backoffJitter,
-    timeout: parseInt(hash['timeout'] ?? '30000', 10),
-    workflowId: hash['workflow_id'] || undefined,
-    stepId: hash['step_id'] || undefined,
-    parentJobId: hash['parent_job_id'] || undefined,
-    traceId: hash['trace_id'] || undefined,
-    spanId: hash['span_id'] || undefined,
-    runAt: hash['run_at'] ? new Date(hash['run_at']) : undefined,
-    cron: hash['cron'] || undefined,
-    deadline: hash['deadline'] ? new Date(hash['deadline']) : undefined,
-    result: hash['result'] ? JSON.parse(hash['result']) : undefined,
-    error: hash['error'] ? JSON.parse(hash['error']) as JobError : undefined,
-    meta: JSON.parse(hash['meta'] ?? '{}') as Record<string, unknown>,
+    timeout,
+    workflowId: ext ? (ext.workflow_id as string | undefined) : (hash['workflow_id'] || undefined),
+    stepId: ext ? (ext.step_id as string | undefined) : (hash['step_id'] || undefined),
+    parentJobId: ext ? (ext.parent_job_id as string | undefined) : (hash['parent_job_id'] || undefined),
+    traceId: ext ? (ext.trace_id as string | undefined) : (hash['trace_id'] || undefined),
+    spanId: ext ? (ext.span_id as string | undefined) : (hash['span_id'] || undefined),
+    runAt: ext
+      ? (ext.run_at ? new Date(ext.run_at as string) : undefined)
+      : (hash['run_at'] ? new Date(hash['run_at']) : undefined),
+    cron: ext ? (ext.cron as string | undefined) : (hash['cron'] || undefined),
+    deadline: ext
+      ? (ext.deadline ? new Date(ext.deadline as string) : undefined)
+      : (hash['deadline'] ? new Date(hash['deadline']) : undefined),
+    result: ext
+      ? (ext.result ?? undefined)
+      : (hash['result'] ? JSON.parse(hash['result']) : undefined),
+    error: ext
+      ? (ext.error as JobError | undefined)
+      : (hash['error'] ? JSON.parse(hash['error']) as JobError : undefined),
+    meta: ext
+      ? ((ext.meta ?? {}) as Record<string, unknown>)
+      : (JSON.parse(hash['meta'] ?? '{}') as Record<string, unknown>),
     createdAt: new Date(hash['created_at'] ?? new Date().toISOString()),
     startedAt: hash['started_at'] ? new Date(hash['started_at']) : undefined,
     completedAt: hash['completed_at'] ? new Date(hash['completed_at']) : undefined,
@@ -142,7 +183,7 @@ for i = 1, count do
   local exists = redis.call('EXISTS', hash_key)
   if exists == 1 then
     local token = id .. ':' .. time[1] .. time[2]
-    redis.call('ZADD', active_key, time[1], id)
+    redis.call('SADD', active_key, id)
     redis.call('HSET', hash_key, 'status', 'active', 'started_at', started_at, 'completion_token', token)
     local data = redis.call('HGETALL', hash_key)
     table.insert(results, id)
@@ -171,7 +212,7 @@ local exists = redis.call('EXISTS', hash_key)
 if exists == 0 then return nil end
 
 local t = redis.call('TIME')
-redis.call('ZADD', active_key, t[1], job_id)
+redis.call('SADD', active_key, job_id)
 redis.call('HSET', hash_key, 'status', 'active', 'started_at', started_at, 'completion_token', token)
 return cjson.encode(redis.call('HGETALL', hash_key))
 `
@@ -194,10 +235,63 @@ end
 local queue = redis.call('HGET', hash_key, 'queue')
 if not queue then return 0 end
 
-redis.call('ZREM', prefix .. queue .. ':active', job_id)
-redis.call('ZADD', prefix .. queue .. ':completed', redis.call('TIME')[1], job_id)
+redis.call('SREM', prefix .. queue .. ':active', job_id)
 redis.call('HSET', hash_key, 'status', 'completed', 'completed_at', completed_at)
 return 1
+`
+
+// Ack + Fetch-next Lua: ack current job AND dequeue next in one call (3→2 calls/job)
+// KEYS[1] = job hash key (current job being acked)
+// KEYS[2] = key prefix (e.g. 'psyqueue:')
+// KEYS[3] = ready list key (for fetching next)
+// KEYS[4] = active set key
+// KEYS[5] = job hash prefix
+// ARGV[1] = completion token
+// ARGV[2] = completed_at
+// ARGV[3] = current job id
+// Returns: [1, nextJobId, nextToken, nextJobDataJson] or [1] if no next job, or [0] if ack failed
+export const ACK_AND_FETCH_SCRIPT = `
+local hash_key = KEYS[1]
+local prefix = KEYS[2]
+local ready_key = KEYS[3]
+local active_set = KEYS[4]
+local hash_prefix = KEYS[5]
+local token = ARGV[1]
+local completed_at = ARGV[2]
+local job_id = ARGV[3]
+
+-- Step 1: Ack current job
+local current_token = redis.call('HGET', hash_key, 'completion_token')
+if token ~= '' and current_token ~= token then
+  return {0}
+end
+
+local queue = redis.call('HGET', hash_key, 'queue')
+if not queue then return {0} end
+
+redis.call('SREM', active_set, job_id)
+redis.call('HSET', hash_key, 'status', 'completed', 'completed_at', completed_at)
+
+-- Step 2: Fetch next job from ready list
+local next_id = redis.call('RPOP', ready_key)
+if not next_id then
+  return {1}
+end
+
+-- Step 3: Activate next job
+local next_hash = hash_prefix .. next_id
+local exists = redis.call('EXISTS', next_hash)
+if exists == 0 then
+  return {1}
+end
+
+local t = redis.call('TIME')
+local next_token = next_id .. ':' .. t[1] .. t[2]
+redis.call('SADD', active_set, next_id)
+redis.call('HSET', next_hash, 'status', 'active', 'started_at', completed_at, 'completion_token', next_token)
+local data = redis.call('HGETALL', next_hash)
+
+return {1, next_id, next_token, cjson.encode(data)}
 `
 
 // Nack Lua: handles requeue, dead-letter, fail in one call
@@ -217,7 +311,7 @@ local now_ms = tonumber(ARGV[5])
 local queue = redis.call('HGET', hash_key, 'queue')
 if not queue then return 0 end
 
-redis.call('ZREM', prefix .. queue .. ':active', job_id)
+redis.call('SREM', prefix .. queue .. ':active', job_id)
 
 if mode == 'dead' then
   redis.call('HSET', hash_key, 'status', 'dead', 'error', error_json)
@@ -366,7 +460,7 @@ for i = 2, #KEYS do
   local token = ARGV[i]
   local job_id = redis.call('HGET', hash_key, 'id')
   if job_id then
-    redis.call('ZADD', active_key, t[1], job_id)
+    redis.call('SADD', active_key, job_id)
     redis.call('HSET', hash_key, 'status', 'active', 'started_at', started_at, 'completion_token', token)
     table.insert(results, token)
     table.insert(results, cjson.encode(redis.call('HGETALL', hash_key)))
@@ -611,6 +705,51 @@ export class RedisBackendAdapter implements BackendAdapter {
     ) as number
 
     return { alreadyCompleted: result === 0 }
+  }
+
+  async ackAndFetch(jobId: string, completionToken: string | undefined, queue: string): Promise<{ ackResult: AckResult; nextJob: DequeuedJob | null }> {
+    const client = this.getClient()
+    const completedAt = new Date().toISOString()
+
+    const result = await client.eval(
+      ACK_AND_FETCH_SCRIPT,
+      5,
+      this.jobKey(jobId),
+      this.keyPrefix(),
+      this.readyKey(queue),
+      this.activeKey(queue),
+      this.jobHashPrefix(),
+      completionToken ?? '',
+      completedAt,
+      jobId,
+    ) as unknown[]
+
+    if (!result || result[0] === 0) {
+      return { ackResult: { alreadyCompleted: true }, nextJob: null }
+    }
+
+    // result[0] = 1 (ack success)
+    // result[1] = nextJobId (optional)
+    // result[2] = nextToken (optional)
+    // result[3] = nextJobDataJson (optional)
+    if (result.length < 4 || !result[1] || !result[2] || !result[3]) {
+      return { ackResult: { alreadyCompleted: false }, nextJob: null }
+    }
+
+    const nextToken = result[2] as string
+    const rawData = result[3] as string
+
+    const dataArray: string[] = JSON.parse(rawData)
+    const hashData: Record<string, string> = {}
+    for (let j = 0; j < dataArray.length; j += 2) {
+      hashData[dataArray[j]!] = dataArray[j + 1]!
+    }
+
+    const job = deserializeJobFromHash(hashData)
+    return {
+      ackResult: { alreadyCompleted: false },
+      nextJob: { ...job, completionToken: nextToken },
+    }
   }
 
   async nack(jobId: string, opts?: NackOpts): Promise<void> {

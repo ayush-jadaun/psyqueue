@@ -163,6 +163,12 @@ export interface BackendAdapter {
    * Acknowledge multiple jobs in a single round-trip (pipeline).
    */
   ackBatch?(items: Array<{ jobId: string; completionToken?: string }>): Promise<AckResult[]>
+
+  /**
+   * Ack current job AND dequeue the next job in one atomic Lua call (3→2 calls/job).
+   * Returns ack result for current job and optionally the next dequeued job.
+   */
+  ackAndFetch?(jobId: string, completionToken: string | undefined, queue: string): Promise<{ ackResult: AckResult; nextJob: DequeuedJob | null }>
 }
 
 // === Event Types ===
