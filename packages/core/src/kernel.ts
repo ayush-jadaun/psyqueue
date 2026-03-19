@@ -20,6 +20,7 @@ import { MiddlewarePipeline } from './middleware-pipeline.js'
 import { createJob } from './job.js'
 import { createContext } from './context.js'
 import { PsyQueueError } from './errors.js'
+import { presets, type PresetConfig } from './presets.js'
 
 interface RegisteredHandler {
   handler: JobHandler
@@ -51,6 +52,33 @@ export class PsyQueue {
     replay(jobId: string): Promise<void>
     replayAll(filter?: JobFilter): Promise<number>
     purge(opts?: { queue?: string; before?: Date }): Promise<number>
+  }
+
+  /**
+   * Create a PsyQueue instance from a named preset configuration.
+   * Returns the instance and the preset config (list of required plugin names).
+   * The caller is responsible for installing and `.use()`-ing the actual plugins.
+   */
+  static from(
+    preset: string | PresetConfig,
+    overrides?: Partial<PresetConfig>,
+  ): { queue: PsyQueue; config: PresetConfig } {
+    let config: PresetConfig
+    if (typeof preset === 'string') {
+      const base = presets[preset]
+      if (!base) {
+        throw new PsyQueueError('UNKNOWN_PRESET', `Unknown preset "${preset}". Available: ${Object.keys(presets).join(', ')}`)
+      }
+      config = { ...base }
+    } else {
+      config = { ...preset }
+    }
+
+    if (overrides?.plugins) {
+      config.plugins = [...config.plugins, ...overrides.plugins]
+    }
+
+    return { queue: new PsyQueue(), config }
   }
 
   constructor() {
