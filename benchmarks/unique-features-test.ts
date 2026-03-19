@@ -320,7 +320,8 @@ async function test_auditLog() {
 
   const q = new PsyQueue()
   q.use(redis({ url: REDIS_URL }))
-  q.use(auditLog({ store: 'memory', hashChain: true, events: 'all' }))
+  const auditPlugin = auditLog({ store: 'memory', hashChain: true, events: 'all' }) as any
+  q.use(auditPlugin)
   q.handle('audited', async () => ({ done: true }))
   await q.start()
   await flush(q)
@@ -329,13 +330,12 @@ async function test_auditLog() {
   await q.enqueue('audited', { data: 'test' })
   await q.processNext('audited')
 
-  // Query audit log
-  const audit = (q as any).exposed?.get?.('audit')
+  // Access audit API directly from the plugin object
   let entries: any[] = []
   let chainValid = false
-  if (audit?.query) {
-    entries = await audit.query({})
-    if (audit.verify) chainValid = await audit.verify()
+  if (auditPlugin.audit) {
+    entries = auditPlugin.audit.query({})
+    chainValid = auditPlugin.audit.verify()
   }
   const ms = performance.now() - t
   await q.stop()
@@ -469,7 +469,7 @@ async function test_chaosTesting() {
   q.use(chaosMode({
     enabled: true,
     scenarios: [
-      { type: 'slowProcess', config: { probability: 1.0, delayMin: 10, delayMax: 10 } },
+      { type: 'slowProcess', config: { probability: 1.0, minDelay: 10, maxDelay: 10 } },
     ]
   }))
 
