@@ -12,7 +12,7 @@
 - **Zero-infra start** -- `npm install @psyqueue/core @psyqueue/backend-sqlite` and go. No Redis, no Docker.
 - **Everything is a plugin** -- Use only what you need. The kernel is ~500 lines.
 - **Scales with you** -- Start with SQLite, graduate to Redis/Postgres without rewriting code.
-- **Faster than BullMQ** -- 7,989 jobs/sec vs BullMQ's 6,187 jobs/sec (1.29x faster) on Redis with concurrency:10.
+- **Production-grade performance** -- Competitive with BullMQ on Redis. Benchmark suite included — run it yourself.
 - **Built for SaaS** -- Multi-tenant fair scheduling, per-tenant rate limits, noisy-neighbor protection.
 - **Workflow orchestration** -- DAG workflows with conditional branching and Saga compensation.
 - **Enterprise-ready** -- Circuit breakers, adaptive backpressure, exactly-once delivery, audit logs.
@@ -87,20 +87,31 @@ await q.stop()
 
 ## Benchmark Results
 
-Measured with 5,000 jobs, concurrency:10, timing from enqueue to `job:completed` event (after ack):
-
-| System | Processing Throughput |
-|--------|---------------------|
-| **PsyQueue (Redis)** | **7,989 jobs/sec** |
-| BullMQ (Redis) | 6,187 jobs/sec |
-
-PsyQueue is **1.29x faster** than BullMQ thanks to its fused `ackAndFetch` Lua script (ack + dequeue in one Redis call), hybrid list + sorted-set model, and single dequeue loop with semaphore-controlled concurrency.
-
-Run the benchmark yourself:
+PsyQueue ships with a comprehensive benchmark suite so you can measure performance in YOUR environment:
 
 ```bash
-npx tsx benchmarks/comparison.ts
+git clone https://github.com/ayush-jadaun/psyqueue.git
+cd psyqueue && pnpm install && pnpm build
+
+# Throughput benchmark (needs Redis)
+npx tsx benchmarks/_perf.ts
+
+# Feature-by-feature comparison vs BullMQ
+npx tsx benchmarks/feature-comparison.ts
+
+# 10-battle reliability test
+npx tsx benchmarks/battle-test.ts
+
+# k6 load test (needs k6 installed)
+npx tsx benchmarks/k6/psyqueue-server.ts  # terminal 1
+k6 run benchmarks/k6/load-test.js         # terminal 2
 ```
+
+Key architectural advantages over BullMQ:
+- **Fused `ackAndFetch`** — ack + dequeue in one Redis call (2 round-trips vs 3)
+- **Hybrid list + sorted set** — O(1) dequeue for priority=0 jobs
+- **Hash field packing** — 13 fields vs 30 per HGETALL
+- **10 features BullMQ doesn't have** — workflows, saga, tenancy, fusion, chaos testing, etc.
 
 ## Architecture
 
