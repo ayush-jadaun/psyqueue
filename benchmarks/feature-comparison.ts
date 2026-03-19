@@ -150,7 +150,7 @@ async function test3_retry() {
   const { scheduler } = await import('@psyqueue/plugin-scheduler')
   const q = new PsyQueue()
   q.use(redis({ url: REDIS_URL }))
-  q.use(scheduler({ pollInterval: 10 })) // fast poll for quick retry pickup
+  q.use(scheduler({ pollInterval: 5 })) // fast poll — matches BullMQ's internal check
   let psyAttempts = 0
   q.handle('flaky', async () => {
     psyAttempts++
@@ -159,17 +159,16 @@ async function test3_retry() {
   })
   await q.start()
   const cl = (q as any).backend.getClient(); await cl.flushdb()
-  // Use fixed backoff with short delay so scheduler picks it up fast
-  await q.enqueue('flaky', {}, { maxRetries: 5, backoff: 'fixed', backoffBase: 20 })
+  // SAME delay as BullMQ: 10ms fixed backoff
+  await q.enqueue('flaky', {}, { maxRetries: 5, backoff: 'fixed', backoffBase: 10 })
 
+  // Use worker for retry — more production-realistic than manual processNext
+  let psyCompleted = false
+  q.events.on('job:completed', () => { psyCompleted = true })
+  const be2 = (q as any).backend; be2.supportsBlocking = false
   const psyStart = performance.now()
-  // First attempt
-  await q.processNext('flaky')
-  // Wait for scheduler to promote retries from scheduled → ready
-  await new Promise(r => setTimeout(r, 100))
-  await q.processNext('flaky')
-  await new Promise(r => setTimeout(r, 100))
-  await q.processNext('flaky')
+  q.startWorker('flaky', { concurrency: 1, pollInterval: 1 })
+  while (!psyCompleted) await new Promise(r => setTimeout(r, 2))
   const psyTime = performance.now() - psyStart
   await q.stop()
 
@@ -178,6 +177,7 @@ async function test3_retry() {
 
   // BullMQ
   const { Queue, Worker } = await import('bullmq')
+  // SAME: 10ms fixed backoff, 5 total attempts
   const bq = new Queue('flaky-' + Date.now(), { connection: REDIS_OPTS, defaultJobOptions: { attempts: 5, backoff: { type: 'fixed', delay: 10 } } })
   await bq.waitUntilReady()
   let bmqAttempts = 0

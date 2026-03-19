@@ -322,10 +322,16 @@ export class WorkerPool {
       if (retryable && job.attempt < job.maxRetries) {
         const delay = this.internals.calculateBackoff(job)
 
-        await backend.nack(job.id, {
-          requeue: true,
-          delay,
-        })
+        if (delay > 0 && delay <= 1000) {
+          // Short delay: wait in-process then requeue immediately.
+          // This avoids the scheduled→ready round-trip through the scheduler,
+          // which adds poll interval latency. For delays > 1s, use the
+          // scheduled set so we don't hold memory/block the worker.
+          await new Promise(r => setTimeout(r, delay))
+          await backend.nack(job.id, { requeue: true, delay: 0 })
+        } else {
+          await backend.nack(job.id, { requeue: true, delay })
+        }
 
         this.eventBus.emit('job:retry', {
           jobId: job.id,
