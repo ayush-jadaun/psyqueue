@@ -1,0 +1,3 @@
+Receipt: aa7be0909a9ce9e9
+Amount: $70
+Worker: W2:PID100056

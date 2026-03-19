@@ -129,7 +129,7 @@ export interface BackendAdapter {
   enqueue(job: Job): Promise<string>
   enqueueBulk(jobs: Job[]): Promise<string[]>
   dequeue(queue: string, count: number): Promise<DequeuedJob[]>
-  ack(jobId: string, completionToken?: string): Promise<AckResult>
+  ack(jobId: string, completionToken?: string, resultJson?: string): Promise<AckResult>
   nack(jobId: string, opts?: NackOpts): Promise<void>
 
   getJob(jobId: string): Promise<Job | null>
@@ -168,7 +168,7 @@ export interface BackendAdapter {
    * Ack current job AND dequeue the next job in one atomic Lua call (3→2 calls/job).
    * Returns ack result for current job and optionally the next dequeued job.
    */
-  ackAndFetch?(jobId: string, completionToken: string | undefined, queue: string): Promise<{ ackResult: AckResult; nextJob: DequeuedJob | null }>
+  ackAndFetch?(jobId: string, completionToken: string | undefined, queue: string, resultJson?: string): Promise<{ ackResult: AckResult; nextJob: DequeuedJob | null }>
 
   /**
    * Recover stale active jobs that have been running longer than maxAgeMs.

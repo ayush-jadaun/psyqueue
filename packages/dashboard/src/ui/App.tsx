@@ -3,6 +3,7 @@ import { OverviewPage } from './pages/Overview'
 import { QueuesPage } from './pages/Queues'
 import { JobsPage } from './pages/Jobs'
 import { JobDetailPage } from './pages/JobDetail'
+import { EventsPage } from './pages/Events'
 
 export function App() {
   return (
@@ -22,6 +23,9 @@ export function App() {
             <li>
               <NavLink to="/jobs">Jobs</NavLink>
             </li>
+            <li>
+              <NavLink to="/events">Live Events</NavLink>
+            </li>
           </ul>
         </nav>
         <main className="content">
@@ -30,6 +34,7 @@ export function App() {
             <Route path="/queues" element={<QueuesPage />} />
             <Route path="/jobs" element={<JobsPage />} />
             <Route path="/jobs/:id" element={<JobDetailPage />} />
+            <Route path="/events" element={<EventsPage />} />
           </Routes>
         </main>
       </div>

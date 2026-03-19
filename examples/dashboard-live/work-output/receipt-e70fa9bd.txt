@@ -1,0 +1,4 @@
+Receipt: e70fa9bdee4d354b35a264cf5f420739425abc22769876d34203e98bf8722fb1
+Order: ORD-1
+Amount: $261
+Processed: 2026-03-19T21:11:20.499Z

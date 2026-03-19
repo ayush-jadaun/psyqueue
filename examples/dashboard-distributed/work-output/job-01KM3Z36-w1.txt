@@ -1,0 +1,6 @@
+Job: 01KM3Z36EW23GZ5FYHZ4WTNJ9H
+Worker: 1 (PID 100520)
+Task: process-data
+Hash: bfee27a7000e
+Processed: 2026-03-19T21:12:47.343Z
+Data: {"task":"process-data","item":128,"data":"payload-128"}

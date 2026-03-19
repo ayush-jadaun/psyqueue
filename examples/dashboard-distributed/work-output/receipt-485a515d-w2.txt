@@ -1,0 +1,3 @@
+Receipt: 485a515d91469b90
+Amount: $294
+Worker: W2:PID100056

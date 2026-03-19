@@ -1,0 +1,3 @@
+Receipt: 75c165b563ca66cc
+Amount: $314
+Worker: W2:PID100056

@@ -1,0 +1,4 @@
+Receipt: af4093b3b95a1c9a4b47ad3fe7e2700f50ef2c3d6a0ddc2a3fedc7938da972a6
+Order: ORD-28
+Amount: $43
+Processed: 2026-03-19T21:06:51.160Z

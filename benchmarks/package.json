@@ -24,10 +24,14 @@
     "@psyqueue/plugin-schema-versioning": "workspace:*",
     "@psyqueue/plugin-tenancy": "workspace:*",
     "@psyqueue/plugin-workflows": "workspace:*",
+    "express": "^4.22.0",
     "ioredis": "^5.4.0",
     "psyqueue": "workspace:*",
     "tsx": "^4.0.0",
     "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.0"
   },
   "optionalDependencies": {
     "bullmq": "^5.0.0",

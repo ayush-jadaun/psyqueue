@@ -1,0 +1,4 @@
+Receipt: b5ff4ee12f8db9f4e1ce0cc35a02228e709058d03537db1391a9d632a935853d
+Order: ORD-103
+Amount: $119
+Processed: 2026-03-19T21:05:52.625Z

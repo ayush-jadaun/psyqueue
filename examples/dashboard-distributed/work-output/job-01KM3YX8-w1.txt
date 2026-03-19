@@ -1,0 +1,6 @@
+Job: 01KM3YX8TAGCVGCCQW1WV2CZF4
+Worker: 1 (PID 99896)
+Task: process-data
+Hash: 9e54b4bd70b3
+Processed: 2026-03-19T21:09:33.148Z
+Data: {"task":"process-data","item":103,"data":"payload-103"}

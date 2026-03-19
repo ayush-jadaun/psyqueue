@@ -1,0 +1,3 @@
+Receipt: 42693a64710bef2b
+Amount: $348
+Worker: W2:PID100056

@@ -1,0 +1,4 @@
+Receipt: a72bcfad54db9d1532642f13d28e00ba47a6c5069bbbf8fca607112df3a0b1a7
+Order: ORD-55
+Amount: $200
+Processed: 2026-03-19T21:11:47.778Z

@@ -1,0 +1,4 @@
+Receipt: af6c47b5eb5a03aa446a8727aa08723a6aa3fdfae66b77e4fa66e782811fecde
+Order: ORD-133
+Amount: $239
+Processed: 2026-03-19T21:06:07.785Z

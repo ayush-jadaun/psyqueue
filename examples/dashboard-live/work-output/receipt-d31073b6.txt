@@ -1,0 +1,4 @@
+Receipt: d31073b633246efec424c406d1a596645f79089de83fee1df34913a00a0464ed
+Order: ORD-31
+Amount: $199
+Processed: 2026-03-19T21:06:52.672Z

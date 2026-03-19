@@ -1,0 +1,4 @@
+Receipt: 36d839d9fa6fe490e5e8f7155784e7c56d9d0036bc1187f5e5e9060e7c048d3c
+Order: ORD-67
+Amount: $228
+Processed: 2026-03-19T21:11:53.832Z

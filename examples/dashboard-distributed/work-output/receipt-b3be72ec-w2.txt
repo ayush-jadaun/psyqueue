@@ -1,0 +1,3 @@
+Receipt: b3be72ecf6fd91c7
+Amount: $159
+Worker: W2:PID42624

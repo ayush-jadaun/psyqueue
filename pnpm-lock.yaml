@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      express:
+        specifier: ^5.2.1
+        version: 5.2.1
       nodemailer:
         specifier: ^8.0.3
         version: 8.0.3
@@ -84,6 +87,9 @@ importers:
       '@psyqueue/plugin-workflows':
         specifier: workspace:*
         version: link:../packages/plugin-workflows
+      express:
+        specifier: ^4.22.0
+        version: 4.22.1
       ioredis:
         specifier: ^5.4.0
         version: 5.10.0
@@ -103,6 +109,32 @@ importers:
       pg-boss:
         specifier: ^10.0.0
         version: 10.4.2
+    devDependencies:
+      '@types/express':
+        specifier: ^4.17.0
+        version: 4.17.25
+
+  benchmarks/k6:
+    dependencies:
+      '@psyqueue/backend-redis':
+        specifier: workspace:*
+        version: link:../../packages/backend-redis
+      bullmq:
+        specifier: ^5.0.0
+        version: 5.71.0
+      express:
+        specifier: ^4.22.0
+        version: 4.22.1
+      psyqueue:
+        specifier: workspace:*
+        version: link:../../packages/core
+      tsx:
+        specifier: ^4.0.0
+        version: 4.21.0
+    devDependencies:
+      '@types/express':
+        specifier: ^4.17.0
+        version: 4.17.25
 
   examples/basic:
     dependencies:
@@ -207,6 +239,9 @@ importers:
       '@types/node':
         specifier: ^25.5.0
         version: 25.5.0
+      ioredis:
+        specifier: ^5.4.0
+        version: 5.10.0
 
   packages/dashboard:
     dependencies:
@@ -2907,8 +2942,7 @@ snapshots:
 
   '@humanwhocodes/retry@0.4.3': {}
 
-  '@ioredis/commands@1.5.0':
-    optional: true
+  '@ioredis/commands@1.5.0': {}
 
   '@ioredis/commands@1.5.1': {}
 
@@ -3472,7 +3506,6 @@ snapshots:
       uuid: 11.1.0
     transitivePeerDependencies:
       - supports-color
-    optional: true
 
   bumpcraft@1.0.3:
     dependencies:
@@ -3980,7 +4013,6 @@ snapshots:
       standard-as-callback: 2.1.0
     transitivePeerDependencies:
       - supports-color
-    optional: true
 
   ipaddr.js@1.9.1: {}
 
@@ -4196,7 +4228,6 @@ snapshots:
   msgpackr@1.11.5:
     optionalDependencies:
       msgpackr-extract: 3.0.3
-    optional: true
 
   nanoid@3.3.11: {}
 
@@ -4212,8 +4243,7 @@ snapshots:
     dependencies:
       semver: 7.7.4
 
-  node-abort-controller@3.1.1:
-    optional: true
+  node-abort-controller@3.1.1: {}
 
   node-gyp-build-optional-packages@5.2.2:
     dependencies:
@@ -4730,8 +4760,7 @@ snapshots:
 
   toidentifier@1.0.1: {}
 
-  tslib@2.8.1:
-    optional: true
+  tslib@2.8.1: {}
 
   tsx@4.21.0:
     dependencies:
@@ -4789,8 +4818,7 @@ snapshots:
 
   utils-merge@1.0.1: {}
 
-  uuid@11.1.0:
-    optional: true
+  uuid@11.1.0: {}
 
   vary@1.1.2: {}
 

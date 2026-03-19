@@ -1,0 +1,4 @@
+Receipt: 36cb5f4eba50db3951850923dc8973ef37e7dbf625782cf03c55da6c53480ca1
+Order: ORD-94
+Amount: $361
+Processed: 2026-03-19T21:05:48.076Z

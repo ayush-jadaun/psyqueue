@@ -320,14 +320,16 @@ export class WorkerPool {
         return
       }
 
-      // Success — use ackAndFetch when available to fuse ack + dequeue in one call
+      // Use ackAndFetch when available to fuse ack + dequeue in one call
+      const resultJson = job.result !== undefined ? JSON.stringify(job.result) : undefined
       if (backend.ackAndFetch) {
-        const { nextJob } = await backend.ackAndFetch(job.id, completionToken, job.queue)
+        const { nextJob } = await backend.ackAndFetch(job.id, completionToken, job.queue, resultJson)
         if (nextJob) {
           this.jobBuffer.push(nextJob)
         }
       } else {
-        await backend.ack(job.id, completionToken)
+        const resultJson = job.result !== undefined ? JSON.stringify(job.result) : undefined
+        await backend.ack(job.id, completionToken, resultJson)
       }
       this.eventBus.emit('job:completed', {
         jobId: job.id,

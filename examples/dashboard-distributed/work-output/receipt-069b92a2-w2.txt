@@ -1,0 +1,3 @@
+Receipt: 069b92a28241d16d
+Amount: $77
+Worker: W2:PID58704

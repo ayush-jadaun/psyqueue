@@ -1,0 +1,3 @@
+Receipt: e6d0adc0ee8c8531
+Amount: $368
+Worker: W1:PID84832

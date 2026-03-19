@@ -1,0 +1,4 @@
+Receipt: eaa58394c9f56eec18dec603cdbd016cfdd7d16e69ffd47d9c458708873477b8
+Order: ORD-145
+Amount: $372
+Processed: 2026-03-19T21:06:13.841Z

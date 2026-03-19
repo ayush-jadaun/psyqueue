@@ -27,6 +27,7 @@
     "vitest": "^3.0.0"
   },
   "dependencies": {
+    "express": "^5.2.1",
     "nodemailer": "^8.0.3"
   }
 }

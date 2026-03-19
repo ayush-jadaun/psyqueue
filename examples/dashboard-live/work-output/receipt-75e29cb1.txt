@@ -1,0 +1,4 @@
+Receipt: 75e29cb1532227635efe404d7357ec83e7fef8ea205ee4f20f8519f0bc58a4eb
+Order: ORD-40
+Amount: $298
+Processed: 2026-03-19T21:06:57.227Z

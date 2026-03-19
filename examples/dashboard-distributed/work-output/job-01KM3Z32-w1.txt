@@ -1,0 +1,6 @@
+Job: 01KM3Z32T8AXC85TM6EH03TC1Z
+Worker: 1 (PID 100520)
+Task: process-data
+Hash: 758211abf6d4
+Processed: 2026-03-19T21:12:43.610Z
+Data: {"task":"process-data","item":116,"data":"payload-116"}

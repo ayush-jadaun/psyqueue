@@ -141,6 +141,49 @@ export function createDashboardServer(opts: DashboardServerOpts): {
     }
   })
 
+  // ─── Live Events (Server-Sent Events) ────────────────────────────────
+  // Streams real-time job events to the browser via SSE.
+  // Uses QueueEvents (cross-process Pub/Sub + Stream) when Redis URL provided,
+  // otherwise falls back to in-process event bus polling.
+  const sseClients = new Set<Response>()
+
+  app.get('/api/events/stream', (req: Request, res: Response) => {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+    })
+    res.write('data: {"event":"connected"}\n\n')
+    sseClients.add(res)
+    req.on('close', () => { sseClients.delete(res) })
+  })
+
+  // Broadcast to all SSE clients
+  function broadcastEvent(data: Record<string, unknown>) {
+    const msg = `data: ${JSON.stringify(data)}\n\n`
+    for (const client of sseClients) {
+      try { client.write(msg) } catch { sseClients.delete(client) }
+    }
+  }
+
+  // Expose broadcastEvent so the plugin can wire it to QueueEvents
+  ;(app as any)._broadcastEvent = broadcastEvent
+
+  // Recent events buffer (last 100 for polling clients)
+  const recentEvents: Array<Record<string, unknown>> = []
+
+  app.get('/api/events/recent', (_req: Request, res: Response) => {
+    res.json({ events: recentEvents.slice(-100) })
+  })
+
+  // Hook: store + broadcast when called externally
+  ;(app as any)._pushEvent = (evt: Record<string, unknown>) => {
+    recentEvents.push({ ...evt, _receivedAt: Date.now() })
+    if (recentEvents.length > 500) recentEvents.splice(0, recentEvents.length - 500)
+    broadcastEvent(evt)
+  }
+
   // Serve built UI static files
   const currentDir = path.dirname(fileURLToPath(import.meta.url))
   const uiDir = path.resolve(currentDir, '..', 'dist', 'ui')

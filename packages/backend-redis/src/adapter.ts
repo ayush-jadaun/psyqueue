@@ -244,13 +244,14 @@ return cjson.encode(redis.call('HGETALL', hash_key))
 
 // Single-call ack script: reads queue from hash, verifies token, moves to completed
 // KEYS[1] = hash key, KEYS[2] = key prefix (e.g. 'psyqueue:')
-// ARGV[1] = token, ARGV[2] = completed_at, ARGV[3] = jobId
+// ARGV[1] = token, ARGV[2] = completed_at, ARGV[3] = jobId, ARGV[4] = result json (optional)
 export const ACK_SCRIPT = `
 local hash_key = KEYS[1]
 local prefix = KEYS[2]
 local token = ARGV[1]
 local completed_at = ARGV[2]
 local job_id = ARGV[3]
+local result_arg = ARGV[4] or ''
 
 local current_token = redis.call('HGET', hash_key, 'completion_token')
 if token ~= '' and current_token ~= token then
@@ -261,7 +262,21 @@ local queue = redis.call('HGET', hash_key, 'queue')
 if not queue then return 0 end
 
 redis.call('SREM', prefix .. queue .. ':active', job_id)
-redis.call('HSET', hash_key, 'status', 'completed', 'completed_at', completed_at)
+if result_arg ~= '' then
+  redis.call('HSET', hash_key, 'status', 'completed', 'completed_at', completed_at, 'result', result_arg)
+else
+  redis.call('HSET', hash_key, 'status', 'completed', 'completed_at', completed_at)
+end
+
+-- Publish completion event (Pub/Sub + Stream backup)
+local event_channel = prefix .. queue .. ':events'
+local event_stream = prefix .. queue .. ':events:stream'
+local ts = redis.call('TIME')[1]
+local result_json = result_arg ~= '' and result_arg or (redis.call('HGET', hash_key, 'result') or '')
+local event_json = cjson.encode({event='completed', jobId=job_id, result=result_json, ts=ts})
+redis.call('PUBLISH', event_channel, event_json)
+redis.call('XADD', event_stream, 'MAXLEN', '~', 500, '*', 'event', 'completed', 'jobId', job_id, 'result', result_json)
+
 return 1
 `
 
@@ -275,6 +290,7 @@ return 1
 // ARGV[1] = completion token
 // ARGV[2] = completed_at
 // ARGV[3] = current job id
+// ARGV[4] = result json (optional)
 // Returns: [1, nextJobId, nextToken, nextJobDataJson] or [1] if no next job, or [0] if ack failed
 export const ACK_AND_FETCH_SCRIPT = `
 local hash_key = KEYS[1]
@@ -286,6 +302,7 @@ local priority_key = KEYS[6]
 local token = ARGV[1]
 local completed_at = ARGV[2]
 local job_id = ARGV[3]
+local result_arg = ARGV[4] or ''
 
 -- Step 1: Ack current job
 local current_token = redis.call('HGET', hash_key, 'completion_token')
@@ -297,7 +314,20 @@ local queue = redis.call('HGET', hash_key, 'queue')
 if not queue then return {0} end
 
 redis.call('SREM', active_set, job_id)
-redis.call('HSET', hash_key, 'status', 'completed', 'completed_at', completed_at)
+if result_arg ~= '' then
+  redis.call('HSET', hash_key, 'status', 'completed', 'completed_at', completed_at, 'result', result_arg)
+else
+  redis.call('HSET', hash_key, 'status', 'completed', 'completed_at', completed_at)
+end
+
+-- Publish completion event (Pub/Sub + Stream backup)
+local event_channel = prefix .. queue .. ':events'
+local event_stream = prefix .. queue .. ':events:stream'
+local ts = redis.call('TIME')[1]
+local result_json = result_arg ~= '' and result_arg or (redis.call('HGET', hash_key, 'result') or '')
+local event_json = cjson.encode({event='completed', jobId=job_id, result=result_json, ts=ts})
+redis.call('PUBLISH', event_channel, event_json)
+redis.call('XADD', event_stream, 'MAXLEN', '~', 500, '*', 'event', 'completed', 'jobId', job_id, 'result', result_json)
 
 -- Step 2: Fetch next job — check priority sorted set first, then ready list
 local next_id = nil
@@ -351,6 +381,15 @@ redis.call('SREM', prefix .. queue .. ':active', job_id)
 if mode == 'dead' then
   redis.call('HSET', hash_key, 'status', 'dead', 'error', error_json)
   redis.call('ZADD', prefix .. queue .. ':dead', now_ms, job_id)
+
+  -- Publish failure event (Pub/Sub + Stream backup)
+  local event_channel = prefix .. queue .. ':events'
+  local event_stream = prefix .. queue .. ':events:stream'
+  local ts = redis.call('TIME')[1]
+  local event_json = cjson.encode({event='failed', jobId=job_id, error=error_json, ts=ts})
+  redis.call('PUBLISH', event_channel, event_json)
+  redis.call('XADD', event_stream, 'MAXLEN', '~', 500, '*', 'event', 'failed', 'jobId', job_id, 'error', error_json)
+
   return 1
 end
 
@@ -769,11 +808,11 @@ export class RedisBackendAdapter implements BackendAdapter {
     return dequeued
   }
 
-  async ack(jobId: string, completionToken?: string): Promise<AckResult> {
+  async ack(jobId: string, completionToken?: string, resultJson?: string): Promise<AckResult> {
     const client = this.getClient()
     const completedAt = new Date().toISOString()
 
-    // Single Lua call — reads queue from hash, no extra round-trip
+    // Single Lua call — reads queue from hash, persists result, publishes event
     const result = await client.eval(
       ACK_SCRIPT,
       2,
@@ -782,12 +821,13 @@ export class RedisBackendAdapter implements BackendAdapter {
       completionToken ?? '',
       completedAt,
       jobId,
+      resultJson ?? '',
     ) as number
 
     return { alreadyCompleted: result === 0 }
   }
 
-  async ackAndFetch(jobId: string, completionToken: string | undefined, queue: string): Promise<{ ackResult: AckResult; nextJob: DequeuedJob | null }> {
+  async ackAndFetch(jobId: string, completionToken: string | undefined, queue: string, resultJson?: string): Promise<{ ackResult: AckResult; nextJob: DequeuedJob | null }> {
     const client = this.getClient()
     const completedAt = new Date().toISOString()
 
@@ -803,6 +843,7 @@ export class RedisBackendAdapter implements BackendAdapter {
       completionToken ?? '',
       completedAt,
       jobId,
+      resultJson ?? '',
     ) as unknown[]
 
     if (!result || result[0] === 0) {

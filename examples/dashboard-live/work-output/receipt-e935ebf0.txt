@@ -1,0 +1,4 @@
+Receipt: e935ebf0996f48028b4abe37699c67406b3510cebdf962bb9020aee59be06b56
+Order: ORD-85
+Amount: $66
+Processed: 2026-03-19T21:05:43.535Z

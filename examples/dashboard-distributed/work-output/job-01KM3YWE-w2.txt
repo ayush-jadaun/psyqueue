@@ -1,0 +1,6 @@
+Job: 01KM3YWEPVJ4S3AQAT3GP7T6KY
+Worker: 2 (PID 101388)
+Task: process-data
+Hash: a4f4d9eb0095
+Processed: 2026-03-19T21:09:06.397Z
+Data: {"task":"process-data","item":17,"data":"payload-17"}

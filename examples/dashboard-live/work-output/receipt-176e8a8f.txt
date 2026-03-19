@@ -1,0 +1,4 @@
+Receipt: 176e8a8f12ae5b4446cfc97ab9c02cb9c534c0a35c278fee61353b9699ae1c50
+Order: ORD-16
+Amount: $395
+Processed: 2026-03-19T21:11:28.057Z

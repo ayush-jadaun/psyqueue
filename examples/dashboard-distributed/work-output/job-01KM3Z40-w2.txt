@@ -1,0 +1,6 @@
+Job: 01KM3Z408Q6BGZQ65Q8XN3EN5Y
+Worker: 2 (PID 41304)
+Task: process-data
+Hash: b04f9858f2f2
+Processed: 2026-03-19T21:13:13.769Z
+Data: {"task":"process-data","item":213,"data":"payload-213"}

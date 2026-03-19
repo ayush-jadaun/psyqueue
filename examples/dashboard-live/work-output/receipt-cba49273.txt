@@ -1,0 +1,4 @@
+Receipt: cba4927314201f49c45c42948c2018ad4fe1bf46552216a2ee1d8345e21b00ec
+Order: ORD-49
+Amount: $387
+Processed: 2026-03-19T21:05:25.371Z

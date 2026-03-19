@@ -1,0 +1,6 @@
+Job: 01KM3YWAR9JMTTA3HETY58HRJ7
+Worker: 1 (PID 99896)
+Task: process-data
+Hash: 87e78923d9eb
+Processed: 2026-03-19T21:09:02.362Z
+Data: {"task":"process-data","item":4,"data":"payload-4"}

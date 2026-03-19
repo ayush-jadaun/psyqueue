@@ -1,0 +1,4 @@
+Receipt: 25f59a301d799a206e6466f5477c2600daf32bf92392b1ebef07f84a623ae779
+Order: ORD-154
+Amount: $30
+Processed: 2026-03-19T21:06:18.392Z

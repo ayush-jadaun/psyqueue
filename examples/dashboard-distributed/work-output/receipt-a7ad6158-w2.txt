@@ -1,0 +1,3 @@
+Receipt: a7ad61581542475b
+Amount: $41
+Worker: W2:PID42624

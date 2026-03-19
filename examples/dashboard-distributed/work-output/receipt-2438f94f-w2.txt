@@ -1,0 +1,3 @@
+Receipt: 2438f94f17cc42ea
+Amount: $250
+Worker: W2:PID100056

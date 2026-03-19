@@ -1,0 +1,3 @@
+Receipt: f8025f67ffac0845
+Amount: $353
+Worker: W2:PID42624

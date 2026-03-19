@@ -1,0 +1,4 @@
+Receipt: d43a39406343eb9907d42ccda82ac82eaa1080979681a6758dcb8f7479ba7dc5
+Order: ORD-13
+Amount: $176
+Processed: 2026-03-19T21:11:26.535Z

@@ -1,0 +1,4 @@
+Receipt: c6f8ebc676c5db378389a09d1a9c92d789b4be1c2ab7e2bdf6f193324fb18815
+Order: ORD-49
+Amount: $347
+Processed: 2026-03-19T21:07:01.766Z

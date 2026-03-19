@@ -1,0 +1,4 @@
+Receipt: bcf4c6507bd3d702e96b336ce272a0165d4928197ee868d9dda54704447fbadc
+Order: ORD-37
+Amount: $137
+Processed: 2026-03-19T21:11:38.682Z

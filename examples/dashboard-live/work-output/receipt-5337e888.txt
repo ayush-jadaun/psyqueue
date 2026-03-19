@@ -1,0 +1,4 @@
+Receipt: 5337e8888d486fd6e3bcf05dd48deccb723bbc450663af9c190c76694a5c9545
+Order: ORD-31
+Amount: $393
+Processed: 2026-03-19T21:11:35.644Z

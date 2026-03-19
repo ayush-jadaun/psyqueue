@@ -1,0 +1,3 @@
+Receipt: d1910f79340f66b8
+Amount: $370
+Worker: W2:PID100056

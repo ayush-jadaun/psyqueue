@@ -1,0 +1,3 @@
+Receipt: ad87ba62fe2bb3bf
+Amount: $99
+Worker: W2:PID100056

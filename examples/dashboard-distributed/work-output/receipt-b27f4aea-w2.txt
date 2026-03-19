@@ -1,0 +1,3 @@
+Receipt: b27f4aea5f33b769
+Amount: $200
+Worker: W2:PID58704

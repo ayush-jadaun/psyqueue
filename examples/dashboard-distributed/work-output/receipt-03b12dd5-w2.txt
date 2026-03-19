@@ -1,0 +1,3 @@
+Receipt: 03b12dd5d24bc9cd
+Amount: $61
+Worker: W2:PID42624

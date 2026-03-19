@@ -1,0 +1,3 @@
+Receipt: 6f508e38e46c253d
+Amount: $248
+Worker: W2:PID100056

@@ -1,0 +1,3 @@
+Receipt: f416b14df4f667bb
+Amount: $158
+Worker: W2:PID100056

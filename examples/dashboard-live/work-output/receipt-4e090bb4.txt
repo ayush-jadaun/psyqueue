@@ -1,0 +1,4 @@
+Receipt: 4e090bb49c375b3422882170ef9947d67f49eaf336dfafbfd91c2c7d14b218fd
+Order: ORD-4
+Amount: $200
+Processed: 2026-03-19T21:05:02.610Z

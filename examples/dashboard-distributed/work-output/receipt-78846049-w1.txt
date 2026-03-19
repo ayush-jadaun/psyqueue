@@ -1,0 +1,3 @@
+Receipt: 788460491eab0596
+Amount: $156
+Worker: W1:PID88420

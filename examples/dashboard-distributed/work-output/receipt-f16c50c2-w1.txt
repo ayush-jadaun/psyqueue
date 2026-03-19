@@ -1,0 +1,3 @@
+Receipt: f16c50c2eba87745
+Amount: $391
+Worker: W1:PID84832

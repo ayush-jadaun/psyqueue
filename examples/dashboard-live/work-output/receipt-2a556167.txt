@@ -1,0 +1,4 @@
+Receipt: 2a556167e17bd42bb5e43d6cc0dc8ff080d86ca7a9959a68439e34dc2786bfba
+Order: ORD-124
+Amount: $351
+Processed: 2026-03-19T21:06:03.234Z

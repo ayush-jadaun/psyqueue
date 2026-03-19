@@ -1,0 +1,4 @@
+Receipt: 7a386233616bba5d79169ad38659c4c39ce81ec8495e8da001caf7675ccc9eda
+Order: ORD-139
+Amount: $333
+Processed: 2026-03-19T21:06:10.805Z

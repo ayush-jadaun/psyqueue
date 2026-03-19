@@ -1,0 +1,4 @@
+Receipt: 46eb7fcaecf65c98e28770503e0aac27990ff6df8f2e80ebd170066418610140
+Order: ORD-160
+Amount: $251
+Processed: 2026-03-19T21:06:21.442Z

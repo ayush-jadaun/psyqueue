@@ -1,0 +1,3 @@
+Receipt: e392a7efad651a94
+Amount: $22
+Worker: W1:PID88420

@@ -1,0 +1,4 @@
+Receipt: 7fbf5a2cbb6c32ed3f4fa313e16a2919a0b67d02bea289b37acd77989bba25ed
+Order: ORD-10
+Amount: $303
+Processed: 2026-03-19T21:05:05.647Z

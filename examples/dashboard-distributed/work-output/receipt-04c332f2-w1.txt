@@ -1,0 +1,3 @@
+Receipt: 04c332f26bb18960
+Amount: $99
+Worker: W1:PID88420

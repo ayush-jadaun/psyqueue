@@ -340,8 +340,8 @@ export class PsyQueue {
         return true
       }
 
-      // Success
-      await backend.ack(job.id, completionToken)
+      const resultJson = job.result !== undefined ? JSON.stringify(job.result) : undefined
+      await backend.ack(job.id, completionToken, resultJson)
       this.eventBus.emit('job:completed', {
         jobId: job.id,
         queue: job.queue,

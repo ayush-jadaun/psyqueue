@@ -1,0 +1,4 @@
+Receipt: ca5e5bfb87248faacbcef6c74140b198652be7465345d54178c7c9c01998f3fd
+Order: ORD-13
+Amount: $154
+Processed: 2026-03-19T21:05:07.155Z

@@ -1,0 +1,4 @@
+Receipt: 4ed3bcccdbd0cdd4f228db3d1b6d9e0d8ae08993b5783287c6d96534244ab2b1
+Order: ORD-79
+Amount: $300
+Processed: 2026-03-19T21:05:40.501Z

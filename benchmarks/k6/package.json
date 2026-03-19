@@ -1,0 +1,20 @@
+{
+  "name": "@psyqueue/k6-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "psyqueue": "tsx psyqueue-server.ts",
+    "bullmq": "tsx bullmq-server.ts",
+    "test": "bash run-k6.sh"
+  },
+  "dependencies": {
+    "@psyqueue/backend-redis": "workspace:*",
+    "bullmq": "^5.0.0",
+    "express": "^4.22.0",
+    "psyqueue": "workspace:*",
+    "tsx": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.0"
+  }
+}

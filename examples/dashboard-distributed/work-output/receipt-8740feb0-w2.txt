@@ -1,0 +1,3 @@
+Receipt: 8740feb0016c9544
+Amount: $115
+Worker: W2:PID100056

@@ -1,0 +1,4 @@
+Receipt: 0472258352ed4114d99fff3bee4263e795a5adcc1b0feeda5d176cfa0e5fa799
+Order: ORD-91
+Amount: $205
+Processed: 2026-03-19T21:05:46.558Z
