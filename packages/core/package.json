@@ -1,0 +1,24 @@
+{
+  "name": "psyqueue",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Micro-kernel distributed job queue platform",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src/",
+    "clean": "rm -rf dist"
+  },
+  "engines": { "node": ">=20.0.0" },
+  "files": ["dist"],
+  "license": "MIT"
+}
