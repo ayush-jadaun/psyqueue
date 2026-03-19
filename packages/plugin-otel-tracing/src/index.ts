@@ -1,7 +1,6 @@
 import type { PsyPlugin, Kernel, Job } from 'psyqueue'
 import {
   trace,
-  context,
   SpanStatusCode,
   SpanKind,
   ROOT_CONTEXT,

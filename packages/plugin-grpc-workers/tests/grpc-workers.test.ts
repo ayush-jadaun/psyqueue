@@ -125,9 +125,11 @@ function callWithMeta<T>(
 describe('gRPC Workers Plugin', () => {
   let q: PsyQueue
   let port: number
+  let portCounter = 0
 
   beforeEach(async () => {
-    port = 50051 + Math.floor(Math.random() * 10000)
+    portCounter++
+    port = 49152 + (process.pid % 1000) * 10 + portCounter // unique per test + per process
   })
 
   afterEach(async () => {
