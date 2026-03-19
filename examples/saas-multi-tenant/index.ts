@@ -70,10 +70,19 @@ async function main() {
 
   console.log('Enqueued jobs for 3 tenants')
 
-  // 6. Process
+  // 6a. Process manually (one at a time)
   await q.processNext('default')
   await q.processNext('default')
   await q.processNext('default')
+
+  // 6b. Alternative: use startWorker() for continuous processing (production pattern)
+  // In production, replace the manual processNext loop with:
+  //
+  // q.startWorker('default', { concurrency: 10, pollInterval: 50 })
+  // // ... wait for jobs to complete ...
+  // await q.stopWorkers()
+  //
+  // startWorker() handles dequeue, dispatch, and concurrency automatically.
 
   await q.stop()
   console.log('Done.')

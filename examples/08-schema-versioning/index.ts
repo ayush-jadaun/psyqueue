@@ -130,6 +130,14 @@ async function main() {
     if (!processed) break
   }
 
+  // Alternative: use startWorker() for continuous processing (production pattern)
+  // In production, replace the manual loop with:
+  //
+  // q.startWorker('default', { concurrency: 5, pollInterval: 50 })
+  //
+  // Schema versioning middleware runs transparently during process pipeline,
+  // migrating payloads from old versions before the handler executes.
+
   await q.stop()
   console.log('\nDone!')
 }

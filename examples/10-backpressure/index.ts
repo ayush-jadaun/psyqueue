@@ -150,6 +150,15 @@ async function main() {
     processed = await q.processNext('default')
   }
 
+  // Alternative: use startWorker() for continuous processing (production pattern)
+  // In production, replace the manual loops above with:
+  //
+  // q.startWorker('default', { concurrency: 10, pollInterval: 50 })
+  //
+  // The backpressure plugin dynamically adjusts concurrency via its
+  // onPressure/onCritical callbacks. With startWorker(), the concurrency
+  // setting controls how many jobs the worker pool processes in parallel.
+
   await q.stop()
   console.log('\nDone!')
 }

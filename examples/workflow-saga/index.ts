@@ -83,12 +83,20 @@ async function main() {
   const workflowId = await q.enqueue('book-trip', { destination: 'Tokyo' })
   console.log(`Started booking workflow: ${workflowId}`)
 
-  // 7. Process the workflow steps
-  // In a real app, a worker loop would do this continuously
+  // 7a. Process the workflow steps manually (for scripts/demos)
+  // In a real app, use startWorker() instead of this loop.
   for (let i = 0; i < 10; i++) {
     const processed = await q.processNext('default')
     if (!processed) break
   }
+
+  // 7b. Alternative: use startWorker() for continuous processing (production pattern)
+  // In production, replace the manual loop above with:
+  //
+  // q.startWorker('default', { concurrency: 5, pollInterval: 50 })
+  // // Workflow steps are automatically dequeued and dispatched to handlers.
+  // // The workflow engine advances the DAG as steps complete.
+  // // Call q.stop() when shutting down — it stops workers automatically.
 
   await q.stop()
   console.log('Done.')

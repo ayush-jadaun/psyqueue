@@ -128,6 +128,14 @@ async function main() {
     if (!processed) break
   }
 
+  // Alternative: use startWorker() for continuous processing (production pattern)
+  // In production, replace the manual processNext loop with:
+  //
+  // q.startWorker('process-order', { concurrency: 5, pollInterval: 50 })
+  //
+  // The workflow engine automatically enqueues downstream steps as prior
+  // steps complete. startWorker() picks them up and processes them.
+
   // ── Start a second workflow: LOW-VALUE order (VIP step will be skipped) ───
 
   console.log('\n-- Starting workflow: $45 order (VIP step should be skipped) --')

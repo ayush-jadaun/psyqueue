@@ -141,6 +141,15 @@ async function main() {
 
   console.log(`\n-- Final breaker state: ${breaker?.currentState} --`)
 
+  // Alternative: use startWorker() for continuous processing (production pattern)
+  // In production, replace the manual loops above with:
+  //
+  // q.startWorker('default', { concurrency: 5, pollInterval: 50 })
+  //
+  // The circuit breaker plugin integrates with startWorker() seamlessly.
+  // When the circuit is OPEN, ctx.breaker() calls ctx.requeue() which puts
+  // the job back in the queue. The worker picks it up again after a delay.
+
   await q.stop()
   console.log('\nDone!')
 }

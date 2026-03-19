@@ -219,6 +219,15 @@ async function main() {
     }
 
     console.log(`  Completed: ${completedCount}/5 jobs despite mixed chaos.`)
+
+    // Alternative: use startWorker() for continuous processing (production pattern)
+    // In production, replace the manual loops above with:
+    //
+    // q.startWorker('default', { concurrency: 5, pollInterval: 50 })
+    //
+    // Chaos testing plugins inject faults at the middleware level, so they
+    // work identically with both processNext() and startWorker(). The worker
+    // pool handles retries and dead-lettering automatically.
     await q.stop()
   }
 

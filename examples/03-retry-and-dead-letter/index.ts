@@ -104,6 +104,14 @@ async function main() {
     if (!didWork) break
   }
 
+  // Alternative: use startWorker() for continuous processing (production pattern)
+  // In production, replace the manual loop above with:
+  //
+  // q.startWorker('default', { concurrency: 5, pollInterval: 50 })
+  //
+  // startWorker() automatically retries failed jobs according to backoff settings.
+  // Retried jobs go through the same handler — the retry count is tracked per-job.
+
   // ── Inspect the dead letter queue ───────────────────────────────────────────
 
   console.log('\n-- Dead letter queue --')

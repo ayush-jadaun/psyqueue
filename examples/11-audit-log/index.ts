@@ -78,6 +78,15 @@ async function main() {
   await q.processNext('default')
   await q.processNext('default')  // always-fails-audit
 
+  // Alternative: use startWorker() for continuous processing (production pattern)
+  // In production, replace the manual processNext calls with:
+  //
+  // q.startWorker('payments', { concurrency: 5, pollInterval: 50 })
+  // q.startWorker('default', { concurrency: 5, pollInterval: 50 })
+  //
+  // The audit log plugin records events for every lifecycle transition
+  // regardless of whether jobs are processed via processNext() or startWorker().
+
   // ── Query the audit log ────────────────────────────────────────────────────
 
   console.log('\n-- Full audit log (all events) --')

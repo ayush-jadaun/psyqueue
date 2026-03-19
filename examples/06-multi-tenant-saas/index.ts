@@ -154,6 +154,14 @@ async function main() {
     processed = await q.processNext('default')
   }
 
+  // Alternative: use startWorker() for continuous processing (production pattern)
+  // In production, replace the manual processNext loop with:
+  //
+  // q.startWorker('default', { concurrency: 10, pollInterval: 50 })
+  //
+  // The tenancy plugin's rate limiting and fair scheduling apply identically
+  // whether processing happens via processNext() or startWorker().
+
   await q.stop()
   console.log('\nDone!')
 }

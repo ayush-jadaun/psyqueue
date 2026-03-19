@@ -160,6 +160,15 @@ async function main() {
     }
   }
 
+  // Alternative: use startWorker() for continuous processing (production pattern)
+  // In production, replace the manual loop above with:
+  //
+  // q.startWorker('default', { concurrency: 5, pollInterval: 50 })
+  //
+  // The saga plugin listens for workflow:failed events and automatically
+  // invokes compensate handlers in reverse order — this works identically
+  // whether jobs are processed via processNext() or startWorker().
+
   // ── Show final workflow state ─────────────────────────────────────────────
 
   console.log('\n-- Final workflow state --')

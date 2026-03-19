@@ -170,6 +170,15 @@ async function main() {
     if (!processed) break
   }
 
+  // Alternative: use startWorker() for continuous processing (production pattern)
+  // In production, replace the manual loop with:
+  //
+  // q.startWorker('default', { concurrency: 5, pollInterval: 50 })
+  //
+  // The deadline-priority plugin periodically recalculates priorities in the
+  // background. startWorker() dequeues jobs in priority order, so deadline-
+  // approaching jobs are automatically processed first.
+
   await q.stop()
   console.log('\nDone!')
 }

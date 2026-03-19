@@ -137,6 +137,15 @@ async function main() {
     processed = await qReject.processNext('default')
   }
 
+  // Alternative: use startWorker() for continuous processing (production pattern)
+  // In production, replace the manual loops above with:
+  //
+  // qIgnore.startWorker('default', { concurrency: 5, pollInterval: 50 })
+  // qReject.startWorker('default', { concurrency: 5, pollInterval: 50 })
+  //
+  // Idempotency deduplication happens at enqueue time (before the job reaches
+  // the queue), so it works identically with both processNext() and startWorker().
+
   await qReject.stop()
   console.log('\nDone!')
 }

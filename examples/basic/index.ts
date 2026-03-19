@@ -33,14 +33,23 @@ async function main() {
   const id2 = await q.enqueue('send-email', { to: 'bob@example.com', subject: 'Welcome!' })
   console.log(`Enqueued jobs: ${id1}, ${id2}`)
 
-  // 6. Process jobs
-  await q.processNext('default')
-  await q.processNext('default')
-
-  // 7. Listen for events
+  // 6. Listen for events
   q.events.on('job:completed', (event) => {
     console.log('Job completed:', event.data)
   })
+
+  // 7a. Process jobs manually (one at a time — useful for scripts/tests)
+  await q.processNext('default')
+  await q.processNext('default')
+
+  // 7b. Alternative: use startWorker() for continuous processing (production pattern)
+  // Uncomment the following to use the worker pool instead of manual processNext():
+  //
+  // q.startWorker('default', { concurrency: 5, pollInterval: 50 })
+  //
+  // startWorker() automatically dequeues and dispatches jobs to handlers.
+  // It uses semaphore-controlled concurrency and blocking reads for Redis.
+  // Workers are stopped automatically when q.stop() is called.
 
   // 8. Stop
   await q.stop()

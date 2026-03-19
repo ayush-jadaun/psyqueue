@@ -128,6 +128,14 @@ async function main() {
     processed = await q.processNext('default')
   }
 
+  // Alternative: use startWorker() for continuous processing (production pattern)
+  // In production, replace the manual loop with:
+  //
+  // q.startWorker('default', { concurrency: 5, pollInterval: 50 })
+  //
+  // The fusion plugin batches jobs at enqueue time. By the time startWorker()
+  // dequeues them, individual jobs have already been merged into batch jobs.
+
   // ── Summary ───────────────────────────────────────────────────────────────
 
   console.log(`\n-- Summary --`)
