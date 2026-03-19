@@ -191,6 +191,7 @@ export interface Kernel {
   pipeline(event: LifecycleEvent, fn: Middleware, opts?: { phase?: MiddlewarePhase }): void
   getBackend(): BackendAdapter
   expose(namespace: string, api: Record<string, unknown>): void
+  getExposed(namespace: string): Record<string, unknown> | undefined
 }
 
 export interface PsyPlugin {

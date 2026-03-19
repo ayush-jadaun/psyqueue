@@ -73,6 +73,19 @@ importers:
         specifier: ^3.0.0
         version: 3.2.4(@types/node@25.5.0)
 
+  packages/plugin-saga:
+    dependencies:
+      '@psyqueue/plugin-workflows':
+        specifier: workspace:*
+        version: link:../plugin-workflows
+      psyqueue:
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.4(@types/node@25.5.0)
+
   packages/plugin-scheduler:
     dependencies:
       cron-parser:

@@ -72,6 +72,9 @@ export class PsyQueue {
           this.backend = api as unknown as BackendAdapter
         }
       },
+      getExposed: (namespace: string) => {
+        return this.exposed.get(namespace)
+      },
     }
 
     this.pluginRegistry = new PluginRegistry(this.kernel)
