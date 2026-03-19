@@ -368,10 +368,19 @@ export class PsyQueue {
       if (retryable && job.attempt < job.maxRetries) {
         const delay = this.calculateBackoff(job)
 
-        await backend.nack(job.id, {
-          requeue: true,
-          delay,
-        })
+        if (delay > 0 && delay <= 1000) {
+          // Short delay: wait in-process then requeue immediately.
+          // This avoids needing the scheduler plugin for quick retries.
+          await new Promise(r => setTimeout(r, delay))
+          await backend.nack(job.id, { requeue: true, delay: 0 })
+        } else if (delay > 1000) {
+          // Long delay: use scheduled set. Warn if no scheduler.
+          await backend.nack(job.id, { requeue: true, delay })
+          // Try to promote immediately from scheduled set (self-heal)
+          try { await backend.pollScheduled(new Date(Date.now() + delay + 100), 1) } catch {}
+        } else {
+          await backend.nack(job.id, { requeue: true, delay: 0 })
+        }
 
         this.eventBus.emit('job:retry', {
           jobId: job.id,

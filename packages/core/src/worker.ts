@@ -145,9 +145,25 @@ export class WorkerPool {
   private async dequeueLoop(): Promise<void> {
     let queueWasEmpty = false
     let lastStaleCheck = Date.now()
+    let lastScheduledPoll = Date.now()
 
     while (!this.stopping) {
       try {
+        // Periodically poll scheduled set for due jobs (every 1 second)
+        // This is a safety net — if no scheduler plugin is registered,
+        // delayed retries still get promoted to the ready queue.
+        if (Date.now() - lastScheduledPoll > 1000) {
+          try {
+            const due = await this.backend.pollScheduled(new Date(), 20)
+            if (due.length > 0) {
+              this.eventBus.emit('job:scheduled-promoted', { queue: this.queue, count: due.length })
+            }
+          } catch {
+            // Best-effort — scheduler plugin handles this if registered
+          }
+          lastScheduledPoll = Date.now()
+        }
+
         // Periodically check for stale active jobs (every 30 seconds)
         if (Date.now() - lastStaleCheck > 30_000) {
           if (this.backend.recoverStaleJobs) {

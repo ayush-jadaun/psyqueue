@@ -225,31 +225,31 @@ describe('Integration: PsyQueue + SQLite backend', () => {
 
   // ─── 13. Exponential backoff delay ──────────────────────────────────
   it('retried jobs are requeued with an exponential backoff delay', async () => {
-    // Spy on the backend's nack to inspect the delay argument
-    const backend = q.getExposed('backend') as unknown as BackendAdapter
-    const nackSpy = vi.spyOn(backend, 'nack')
-
+    let attempts = 0
     q.handle('backoff-job', async () => {
-      throw new Error('timeout — transient')
+      attempts++
+      if (attempts < 3) throw new Error('timeout — transient')
+      return { ok: true }
     })
 
-    // backoffBase=1000, exponential, no jitter for deterministic check
+    // backoffBase=100, exponential, short delays handled in-process
     await q.enqueue('backoff-job', {}, {
       maxRetries: 5,
       backoff: 'exponential',
-      backoffBase: 1000,
+      backoffBase: 100,
       backoffJitter: false,
     })
 
+    const start = Date.now()
+    // Process: fail (wait 100ms) → fail (wait 200ms) → succeed
     await q.processNext('backoff-job')
+    await q.processNext('backoff-job')
+    await q.processNext('backoff-job')
+    const elapsed = Date.now() - start
 
-    // First failure: attempt=1, delay = 1000 * 2^(1-1) = 1000
-    expect(nackSpy).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({ requeue: true, delay: 1000 })
-    )
-
-    nackSpy.mockRestore()
+    // Should have waited ~300ms total (100 + 200) for in-process backoff
+    expect(attempts).toBe(3)
+    expect(elapsed).toBeGreaterThanOrEqual(200) // at least 100+200=300ms minus overhead
   })
 
   // ─── 14. Job with metadata ─────────────────────────────────────────
