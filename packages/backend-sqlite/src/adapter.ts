@@ -164,6 +164,7 @@ export class SQLiteBackendAdapter implements BackendAdapter {
   }
 
   async connect(): Promise<void> {
+    if (this.db) return // already connected — idempotent
     this.db = new Database(this.opts.path)
     this.db.pragma('journal_mode = WAL')
     this.db.pragma('foreign_keys = ON')
