@@ -11,7 +11,7 @@ npm install psyqueue @psyqueue/backend-sqlite
 ## Usage
 
 ```typescript
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { sqlite } from '@psyqueue/backend-sqlite'
 
 const q = new PsyQueue()

@@ -357,7 +357,7 @@ Jobs have six statuses:
 Here is a minimal plugin that logs all enqueued jobs:
 
 ```typescript
-import type { PsyPlugin, Kernel } from 'psyqueue'
+import type { PsyPlugin, Kernel } from '@psyqueue/core'
 
 export function myLogger(): PsyPlugin {
   return {

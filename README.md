@@ -8,7 +8,7 @@
 
 ## Why PsyQueue?
 
-- **Zero-infra start** -- `npm install psyqueue @psyqueue/backend-sqlite` and go. No Redis, no Docker.
+- **Zero-infra start** -- `npm install @psyqueue/core @psyqueue/backend-sqlite` and go. No Redis, no Docker.
 - **Everything is a plugin** -- Use only what you need. The kernel is ~500 lines.
 - **Scales with you** -- Start with SQLite, graduate to Redis/Postgres without rewriting code.
 - **Faster than BullMQ** -- 7,989 jobs/sec vs BullMQ's 6,187 jobs/sec (1.29x faster) on Redis with concurrency:10.
@@ -19,11 +19,11 @@
 ## Quick Start
 
 ```bash
-npm install psyqueue @psyqueue/backend-sqlite
+npm install @psyqueue/core @psyqueue/backend-sqlite
 ```
 
 ```typescript
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { sqlite } from '@psyqueue/backend-sqlite'
 
 const q = new PsyQueue()

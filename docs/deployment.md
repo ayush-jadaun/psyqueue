@@ -61,11 +61,11 @@ cd ../backend-redis && npm publish --access public
 Best for: prototyping, small apps, single-server deployments.
 
 ```bash
-npm install psyqueue @psyqueue/backend-sqlite
+npm install @psyqueue/core @psyqueue/backend-sqlite
 ```
 
 ```ts
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { sqlite } from '@psyqueue/backend-sqlite'
 
 const q = new PsyQueue()
@@ -91,11 +91,11 @@ process.on('SIGTERM', async () => {
 Best for: multi-server, high throughput, distributed workers.
 
 ```bash
-npm install psyqueue @psyqueue/backend-redis @psyqueue/plugin-scheduler @psyqueue/plugin-crash-recovery @psyqueue/dashboard
+npm install @psyqueue/core @psyqueue/backend-redis @psyqueue/plugin-scheduler @psyqueue/plugin-crash-recovery @psyqueue/dashboard
 ```
 
 ```ts
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { redis } from '@psyqueue/backend-redis'
 import { scheduler } from '@psyqueue/plugin-scheduler'
 import { crashRecovery } from '@psyqueue/plugin-crash-recovery'
@@ -281,7 +281,7 @@ For serverless, use `processNext()` instead of `startWorker()`:
 
 ```ts
 // handler.ts — Lambda function triggered by SQS/EventBridge/cron
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { redis } from '@psyqueue/backend-redis'
 
 const q = new PsyQueue()

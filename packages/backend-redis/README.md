@@ -11,7 +11,7 @@ npm install psyqueue @psyqueue/backend-redis
 ## Usage
 
 ```typescript
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { redis } from '@psyqueue/backend-redis'
 
 const q = new PsyQueue()

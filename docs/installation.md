@@ -13,7 +13,7 @@
 ### Core Only (zero dependencies)
 
 ```bash
-npm install psyqueue @psyqueue/backend-sqlite
+npm install @psyqueue/core @psyqueue/backend-sqlite
 ```
 
 This gets you a fully working job queue with SQLite — no Redis, no Docker, nothing else needed.
@@ -21,7 +21,7 @@ This gets you a fully working job queue with SQLite — no Redis, no Docker, not
 ### With Redis Backend
 
 ```bash
-npm install psyqueue @psyqueue/backend-redis
+npm install @psyqueue/core @psyqueue/backend-redis
 # Requires Redis running (Docker or native)
 docker run -d -p 6379:6379 redis:7-alpine
 ```
@@ -29,7 +29,7 @@ docker run -d -p 6379:6379 redis:7-alpine
 ### With Postgres Backend
 
 ```bash
-npm install psyqueue @psyqueue/backend-postgres
+npm install @psyqueue/core @psyqueue/backend-postgres
 # Requires PostgreSQL running
 docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=psyqueue postgres:16-alpine
 ```
@@ -119,18 +119,18 @@ Instead of picking plugins one by one, use presets:
 ### Lite (single server, zero infra)
 
 ```bash
-npm install psyqueue @psyqueue/backend-sqlite @psyqueue/plugin-scheduler @psyqueue/plugin-crash-recovery
+npm install @psyqueue/core @psyqueue/backend-sqlite @psyqueue/plugin-scheduler @psyqueue/plugin-crash-recovery
 ```
 
 ```ts
-import { PsyQueue, presets } from 'psyqueue'
+import { PsyQueue, presets } from '@psyqueue/core'
 const q = PsyQueue.from(presets.lite)
 ```
 
 ### SaaS (multi-tenant production)
 
 ```bash
-npm install psyqueue @psyqueue/backend-redis @psyqueue/plugin-tenancy @psyqueue/plugin-workflows @psyqueue/plugin-saga @psyqueue/plugin-circuit-breaker @psyqueue/plugin-backpressure @psyqueue/dashboard @psyqueue/plugin-metrics
+npm install @psyqueue/core @psyqueue/backend-redis @psyqueue/plugin-tenancy @psyqueue/plugin-workflows @psyqueue/plugin-saga @psyqueue/plugin-circuit-breaker @psyqueue/plugin-backpressure @psyqueue/dashboard @psyqueue/plugin-metrics
 ```
 
 ```ts
@@ -140,7 +140,7 @@ const q = PsyQueue.from(presets.saas)
 ### Enterprise (compliance-ready)
 
 ```bash
-npm install psyqueue @psyqueue/backend-postgres @psyqueue/plugin-tenancy @psyqueue/plugin-workflows @psyqueue/plugin-saga @psyqueue/plugin-exactly-once @psyqueue/plugin-audit-log @psyqueue/plugin-otel-tracing @psyqueue/plugin-schema-versioning @psyqueue/plugin-circuit-breaker @psyqueue/plugin-backpressure @psyqueue/dashboard @psyqueue/plugin-metrics
+npm install @psyqueue/core @psyqueue/backend-postgres @psyqueue/plugin-tenancy @psyqueue/plugin-workflows @psyqueue/plugin-saga @psyqueue/plugin-exactly-once @psyqueue/plugin-audit-log @psyqueue/plugin-otel-tracing @psyqueue/plugin-schema-versioning @psyqueue/plugin-circuit-breaker @psyqueue/plugin-backpressure @psyqueue/dashboard @psyqueue/plugin-metrics
 ```
 
 ```ts
@@ -247,7 +247,7 @@ services:
 ## Verify Installation
 
 ```ts
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { sqlite } from '@psyqueue/backend-sqlite'
 
 const q = new PsyQueue()
@@ -271,7 +271,7 @@ console.log('PsyQueue is working!')
 
 | Package | Description | Install |
 |---------|-------------|---------|
-| `psyqueue` | Core kernel | `npm i psyqueue` |
+| `@psyqueue/core` | Core kernel | `npm i @psyqueue/core` |
 | `@psyqueue/backend-sqlite` | SQLite backend | `npm i @psyqueue/backend-sqlite` |
 | `@psyqueue/backend-redis` | Redis backend | `npm i @psyqueue/backend-redis` |
 | `@psyqueue/backend-postgres` | PostgreSQL backend | `npm i @psyqueue/backend-postgres` |

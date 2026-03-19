@@ -621,7 +621,7 @@ All errors extend `PsyQueueError` which has a `code` property.
 | `SchemaError` | `SCHEMA_MISMATCH` | Payload does not match expected schema |
 
 ```typescript
-import { PsyQueueError, RateLimitError } from 'psyqueue'
+import { PsyQueueError, RateLimitError } from '@psyqueue/core'
 
 try {
   await q.enqueue('job', payload)
@@ -665,7 +665,7 @@ The middleware pipeline class. Instantiated internally by the kernel.
 The presets configuration object:
 
 ```typescript
-import { presets } from 'psyqueue'
+import { presets } from '@psyqueue/core'
 
 console.log(presets.lite.plugins)
 // ['backend-sqlite', 'scheduler', 'crash-recovery']

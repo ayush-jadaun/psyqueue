@@ -11,7 +11,7 @@ npm install psyqueue @psyqueue/backend-postgres
 ## Usage
 
 ```typescript
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { postgres } from '@psyqueue/backend-postgres'
 
 const q = new PsyQueue()

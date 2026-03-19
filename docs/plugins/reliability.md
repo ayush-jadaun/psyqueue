@@ -253,7 +253,7 @@ const id2 = await q.enqueue('payment.charge', { amount: 4999 }, {
 | `reject` | Throws a `DuplicateJobError` with the original job ID. |
 
 ```typescript
-import { DuplicateJobError } from 'psyqueue'
+import { DuplicateJobError } from '@psyqueue/core'
 
 try {
   await q.enqueue('task', payload, { idempotencyKey: 'key-123' })

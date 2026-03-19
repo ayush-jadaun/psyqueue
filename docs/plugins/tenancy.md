@@ -178,7 +178,7 @@ tenancyApi.selectTenant(['tenant-123', 'tenant-456'])
 ## Real-World Example
 
 ```typescript
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { redis } from '@psyqueue/backend-redis'
 import { tenancy } from '@psyqueue/plugin-tenancy'
 

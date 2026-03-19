@@ -8,7 +8,7 @@ PsyQueue requires Node.js 20+ and uses ESM modules.
 
 ```bash
 # Core package + SQLite backend (zero-infra)
-npm install psyqueue @psyqueue/backend-sqlite
+npm install @psyqueue/core @psyqueue/backend-sqlite
 ```
 
 If you use pnpm or yarn:
@@ -24,7 +24,7 @@ yarn add psyqueue @psyqueue/backend-sqlite
 Create a file `worker.ts`:
 
 ```typescript
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { sqlite } from '@psyqueue/backend-sqlite'
 
 // 1. Create the queue with a SQLite backend
@@ -71,7 +71,7 @@ Key points:
 For production use, `startWorker()` launches a continuous worker pool that automatically dequeues and processes jobs. It uses blocking reads (BRPOPLPUSH) for Redis backends and polling for SQLite/Postgres.
 
 ```typescript
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { redis } from '@psyqueue/backend-redis'
 
 const q = new PsyQueue()

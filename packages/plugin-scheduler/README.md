@@ -11,7 +11,7 @@ npm install @psyqueue/plugin-scheduler
 ## Usage
 
 ```typescript
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { sqlite } from '@psyqueue/backend-sqlite'
 import { scheduler } from '@psyqueue/plugin-scheduler'
 
