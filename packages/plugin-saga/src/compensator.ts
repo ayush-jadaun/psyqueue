@@ -89,15 +89,15 @@ function buildCompensationContext(
   stepName: string,
   results: Record<string, unknown>,
   _events: EventBusInterface,
-): import('psyqueue').JobContext {
-  const log: import('psyqueue').Logger = {
+): import('@psyqueue/core').JobContext {
+  const log: import('@psyqueue/core').Logger = {
     debug: () => {},
     info: () => {},
     warn: () => {},
     error: () => {},
   }
 
-  const job: import('psyqueue').Job = {
+  const job: import('@psyqueue/core').Job = {
     id: `compensation-${workflowId}-${stepName}`,
     queue: workflowId,
     name: stepName,
