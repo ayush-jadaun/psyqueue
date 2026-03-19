@@ -67,7 +67,7 @@ PsyQueue is designed in **concentric rings** — each audience enters at their c
 
 **Ring 1: Indie / Startup Developers**
 - Zero external dependencies to start (embedded SQLite)
-- 3-line setup: `new PsyQueue()`, `.use(sqlite())`, `.start()`
+- Minimal setup to initialize: `new PsyQueue()`, `.use(sqlite())`, `.start()` — add handlers as needed
 - Works on $5/month VMs with 1GB RAM
 - Offline-first sync for unreliable network environments
 
@@ -237,13 +237,16 @@ init(kernel) {
   })
 }
 
-// User-level
-q.on('job:completed', (event) => {
+// User-level event subscription
+q.events.on('job:completed', (event) => {
   // Custom logic when jobs complete
 })
 
-// Wildcard subscriptions
-q.on('workflow:*', (event) => {
+// Wildcard subscriptions — `*` matches exactly one segment after the colon.
+// `workflow:*` matches `workflow:started`, `workflow:failed`, etc.
+// It does NOT match nested segments like `workflow:step:sub`.
+// Prefix wildcards (e.g., `*:failed`) are NOT supported.
+q.events.on('workflow:*', (event) => {
   // All workflow events
 })
 ```
@@ -263,10 +266,12 @@ interface PsyPlugin {
   version: string
 
   /**
-   * Plugin category — used for dependency resolution.
-   * A dependency on 'backend' is satisfied by any plugin with provides: 'backend'
+   * Capabilities this plugin provides — used for dependency resolution.
+   * A dependency on 'backend' is satisfied by any plugin that provides 'backend'.
+   * Can be a single string or an array if the plugin provides multiple capabilities.
+   * If multiple plugins provide the same capability, the last registered one wins.
    */
-  provides?: string
+  provides?: string | string[]
 
   /**
    * Other plugins (by name or category) that must be registered before this one.
@@ -429,10 +434,12 @@ type Middleware = (ctx: JobContext, next: () => Promise<void>) => Promise<void>
 
 **Registering middleware:**
 
+Middleware is registered with `q.pipeline()` (or `kernel.pipeline()` inside plugins). This is **distinct** from `q.events.on()` which subscribes to fire-and-forget events. Middleware uses `(ctx, next)` signatures; events use `(event)` signatures.
+
 ```ts
 // Plugin registers middleware during init
 init(kernel) {
-  kernel.on('process', async (ctx, next) => {
+  kernel.pipeline('process', async (ctx, next) => {
     const start = Date.now()
     await next()
     ctx.log.info(`Processed in ${Date.now() - start}ms`)
@@ -440,14 +447,35 @@ init(kernel) {
 }
 
 // Or user-level
-q.on('enqueue', async (ctx, next) => {
+q.pipeline('enqueue', async (ctx, next) => {
   // Add custom metadata to every enqueued job
   ctx.job.meta.source = 'api-v2'
   await next()
 })
 ```
 
-**Middleware execution order:**
+**Middleware ordering:**
+
+Middleware runs in a deterministic order controlled by **phases**. Each middleware declares which phase it belongs to. Phases execute in this fixed order:
+
+| Phase | Purpose | Example Plugins |
+|-------|---------|-----------------|
+| `guard` | Dedup, rate limiting, auth — short-circuit early | exactly-once, rate-limiter |
+| `validate` | Schema validation, payload checks | schema-versioning |
+| `transform` | Modify job before processing — fusion, priority | job-fusion, deadline-priority |
+| `observe` | Logging, tracing, audit — non-blocking | otel-tracing, audit-log |
+| `execute` | The actual work — backend persist, job handler | backend, user handler |
+| `finalize` | Post-execution — cleanup, WAL flush, metrics | crash-recovery, metrics |
+
+Within the same phase, middleware runs in plugin dependency order, then registration order. Third-party plugins declare their phase when registering middleware:
+
+```ts
+kernel.pipeline('enqueue', myMiddleware, { phase: 'validate' })
+```
+
+If no phase is specified, `execute` is the default.
+
+**Resulting execution order:**
 
 ```
 enqueue middleware chain:
@@ -597,13 +625,13 @@ export function myCustomPlugin(options: MyOptions): PsyPlugin {
     depends: [],  // declare dependencies if any
 
     init(kernel: Kernel) {
-      // Register middleware
-      kernel.on('process', async (ctx, next) => {
+      // Register middleware (sequential, with next())
+      kernel.pipeline('process', async (ctx, next) => {
         // Your logic here
         await next()
       })
 
-      // Subscribe to events
+      // Subscribe to events (fire-and-forget observers)
       kernel.events.on('job:failed', (event) => {
         // React to failures
       })
@@ -661,14 +689,26 @@ interface BackendAdapter {
   enqueue(job: Job): Promise<string>
 
   /**
+   * Add multiple jobs atomically. Returns assigned job IDs in order.
+   * If any job fails to enqueue, the entire batch is rolled back.
+   */
+  enqueueBulk(jobs: Job[]): Promise<string[]>
+
+  /**
    * Atomically fetch up to `count` jobs from the specified queue.
    * Jobs must be locked so no other worker can dequeue them.
    * Returns an empty array if no jobs are available.
+   * Each returned job includes a `completionToken` for exactly-once ack.
    */
-  dequeue(queue: string, count: number): Promise<Job[]>
+  dequeue(queue: string, count: number): Promise<DequeuedJob[]>
 
-  /** Mark a job as successfully completed */
-  ack(jobId: string): Promise<void>
+  /**
+   * Mark a job as successfully completed.
+   * If `completionToken` is provided (from exactly-once plugin), the backend
+   * atomically verifies the token matches before marking complete.
+   * Returns `{ alreadyCompleted: true }` if another worker already acked.
+   */
+  ack(jobId: string, completionToken?: string): Promise<AckResult>
 
   /**
    * Reject a job. Depending on NackOpts, the job may be:
@@ -702,9 +742,10 @@ interface BackendAdapter {
 
   /**
    * Acquire a distributed lock. Returns true if acquired, false if held by another.
-   * TTL prevents stale locks from crashed processes.
+   * TTL (in milliseconds) prevents stale locks from crashed processes.
+   * Each backend converts to its native unit internally (e.g., Redis SET NX uses seconds).
    */
-  acquireLock(key: string, ttl: number): Promise<boolean>
+  acquireLock(key: string, ttlMs: number): Promise<boolean>
 
   /** Release a previously acquired lock */
   releaseLock(key: string): Promise<void>
@@ -722,6 +763,15 @@ interface BackendAdapter {
 **Supporting types:**
 
 ```ts
+/** Job returned from dequeue, with a completion token for exactly-once ack */
+interface DequeuedJob extends Job {
+  completionToken: string    // unique token for this dequeue attempt
+}
+
+interface AckResult {
+  alreadyCompleted: boolean  // true if another worker already acked this job
+}
+
 interface NackOpts {
   requeue?: boolean        // put back in queue (default: true)
   delay?: number           // ms to wait before requeue
@@ -945,14 +995,24 @@ interface Job {
   /** Deduplication key. If another job with this key exists in the dedup window, this job is a duplicate */
   idempotencyKey?: string
 
-  /** Maximum number of retry attempts (default: 3) */
+  /** Maximum number of retry attempts AFTER the initial attempt (default: 3).
+   *  Total executions = 1 initial + maxRetries. So maxRetries: 3 means up to 4 total attempts. */
   maxRetries: number
 
-  /** Current attempt number (starts at 1) */
+  /** Current attempt number (starts at 1 for the initial attempt, 2 for first retry, etc.) */
   attempt: number
 
   /** Retry backoff strategy */
   backoff: 'fixed' | 'exponential' | 'linear' | BackoffFunction
+
+  /** Base delay for backoff in ms (default: 1000). First retry waits this long. */
+  backoffBase?: number
+
+  /** Maximum backoff delay in ms (default: 300000 / 5min). Backoff never exceeds this. */
+  backoffCap?: number
+
+  /** Add random jitter to backoff delays to prevent thundering herd (default: true) */
+  backoffJitter?: boolean
 
   /** Maximum processing time in ms before job is considered stuck (default: 30000) */
   timeout: number
@@ -967,12 +1027,12 @@ interface Job {
   /** ID of the job that spawned this one */
   parentJobId?: string
 
-  // === Tracing ===
+  // === Tracing (populated by otel-tracing plugin; absent if plugin not installed) ===
   /** OpenTelemetry trace ID — correlates with originating request */
-  traceId: string
+  traceId?: string
 
   /** OpenTelemetry span ID */
-  spanId: string
+  spanId?: string
 
   // === State ===
   /** Current job status */
@@ -1245,6 +1305,8 @@ workflow('user.onboard')
 
 When `when` returns `false`, the step is skipped (status: `SKIPPED`). Downstream steps that depend on a skipped step still proceed — they only wait for steps that actually ran.
 
+**Edge case — all dependencies skipped:** If ALL dependencies of a step were skipped (e.g., neither `premium-setup` nor `basic-setup` ran), the step runs immediately with no upstream results. This prevents workflows from stalling when conditional branches don't match. If you want a step to be skipped when all its dependencies are skipped, use `when` on that step too.
+
 ### Saga Compensation
 
 When a workflow step fails and all retries are exhausted, PsyQueue can automatically undo the work of completed steps by running compensation functions in reverse order.
@@ -1290,7 +1352,10 @@ const cancelFlight = async (ctx) => {
 ```
 PENDING → RUNNING → COMPLETED
                   → FAILED → COMPENSATING → COMPENSATED
-                                          → COMPENSATION_FAILED
+                  |                       → COMPENSATION_FAILED
+                  → CANCELLED
+FAILED → PENDING (manual retry via API/dashboard)
+COMPENSATION_FAILED → COMPENSATING (manual retry compensation)
 ```
 
 | State | Meaning |
@@ -1302,6 +1367,12 @@ PENDING → RUNNING → COMPLETED
 | `COMPENSATING` | Running compensation functions |
 | `COMPENSATED` | All compensations ran successfully |
 | `COMPENSATION_FAILED` | A compensation function failed — manual intervention required |
+| `CANCELLED` | Workflow was cancelled by user. Active steps are allowed to complete, pending steps are skipped. |
+
+**Manual intervention:**
+- `FAILED` workflows can be retried via `q.workflows.retry(workflowId)` — this resets the failed step to `PENDING` and re-runs from there
+- `COMPENSATION_FAILED` workflows can retry compensation via `q.workflows.retryCompensation(workflowId)`
+- `RUNNING` workflows can be cancelled via `q.workflows.cancel(workflowId)` — active steps finish, pending steps are skipped
 
 ### Workflow Persistence
 
@@ -1345,9 +1416,9 @@ In SaaS applications, multiple tenants share the same job queue infrastructure. 
 ```ts
 q.use(tenancy({
   tiers: {
-    free:       { rateLimit: 100,   concurrency: 5,   weight: 1 },
-    pro:        { rateLimit: 1000,  concurrency: 20,  weight: 3 },
-    enterprise: { rateLimit: 10000, concurrency: 100, weight: 10 }
+    free:       { rateLimit: { max: 100, window: '1m' },   concurrency: 5,   weight: 1 },
+    pro:        { rateLimit: { max: 1000, window: '1m' },  concurrency: 20,  weight: 3 },
+    enterprise: { rateLimit: { max: 10000, window: '1m' }, concurrency: 100, weight: 10 }
   },
 
   resolveTier: async (tenantId) => {
@@ -1362,7 +1433,7 @@ q.use(tenancy({
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `rateLimit` | number | Maximum jobs this tier can enqueue per minute |
+| `rateLimit` | `{ max: number, window: '1s' \| '1m' \| '1h' }` | Maximum jobs this tier can enqueue within the specified window |
 | `concurrency` | number | Maximum simultaneously processing jobs for this tenant |
 | `weight` | number | Relative share of processing capacity in fair scheduling |
 
@@ -1507,7 +1578,10 @@ q.use(backpressure({
     ]
   },
 
-  // OR use fully custom functions for complete control
+  // OR use fully custom functions for complete control.
+  // If `onPressure`/`onCritical` callbacks are provided, they REPLACE the
+  // corresponding `actions` array. You cannot use both — the kernel validates
+  // this at startup and throws if both are specified for the same state.
   onPressure: async (ctx) => {
     await ctx.setConcurrency(ctx.current.concurrency * 0.5)
     await ctx.notify('slack', 'Queue under pressure')
@@ -1853,6 +1927,13 @@ q.use(jobFusion({
 **Before fusion:** 1000 `notification.push` jobs → 1000 individual API calls
 **After fusion:** 1000 jobs → 10 batched calls of 100 notifications each
 
+**Non-payload field merge strategy for fused jobs:**
+- **priority:** Inherits the highest priority from all fused jobs
+- **deadline:** Inherits the earliest (most urgent) deadline
+- **tenantId:** Jobs can only fuse within the same tenant. Cross-tenant fusion is never applied.
+- **idempotencyKey:** The fused job gets a new composite key: `fused:{groupKey}:{windowTimestamp}`
+- **meta:** Merged, with later jobs overwriting conflicting keys
+
 **Producers don't need to know about fusion.** They enqueue individual jobs normally. Fusion is transparent.
 
 ---
@@ -2009,10 +2090,14 @@ q.use(dashboard({
   port: 4000,
   basePath: '/dashboard',      // serve at custom path
   auth: {
-    type: 'basic',
+    type: 'basic',             // simple username/password
     user: 'admin',
     pass: process.env.DASH_PASS
   }
+  // Other auth options:
+  // auth: { type: 'bearer', tokens: ['secret-1', 'secret-2'] }
+  // auth: { type: 'custom', middleware: (req, res, next) => { /* your auth logic */ } }
+  // OAuth/OIDC support is planned for a future version.
 }))
 ```
 
@@ -2048,7 +2133,9 @@ syntax = "proto3";
 package psyqueue.v1;
 
 service PsyQueueWorker {
-  // Worker pulls available jobs
+  // Worker pulls available jobs. The stream delivers up to `count` jobs
+  // and then completes (one-shot). For continuous delivery, workers
+  // reconnect with a new FetchJobs call after processing.
   rpc FetchJobs(FetchRequest) returns (stream Job);
 
   // Worker reports successful completion
@@ -2300,7 +2387,10 @@ For IoT devices, mobile backends, and regions with unreliable connectivity, PsyQ
 
 ```ts
 q.use(offlineSync({
-  // Local buffer uses embedded SQLite
+  // Local buffer uses its own independent embedded SQLite instance.
+  // This is NOT the registered backend — it is a dedicated local buffer
+  // managed entirely by the offline-sync plugin, separate from any
+  // SQLite/Redis/Postgres backend the queue is configured with.
   localPath: './psyqueue-offline.db',
 
   // Remote PsyQueue server (gRPC or HTTP)
@@ -2652,6 +2742,14 @@ These standards apply to every package in the PsyQueue monorepo.
 | Dequeue latency (p50) | <5ms | <1ms | <10ms |
 | Kernel overhead per job | <0.5ms | <0.5ms | <0.5ms |
 | Memory (kernel + 1 backend) | <50MB | <50MB | <50MB |
+
+### Versioning & Compatibility
+
+- **Kernel API** follows semver. Breaking changes to `PsyPlugin`, `BackendAdapter`, `JobContext`, or `Middleware` types increment the major version.
+- **Plugin contract** includes a `version` field. Plugins declare which kernel version range they support via `peerDependencies` in their `package.json`.
+- **Backend adapters** are versioned independently of the kernel and of each other.
+- **gRPC protocol** uses package versioning (`psyqueue.v1`). Breaking protocol changes publish a new version (`psyqueue.v2`) while maintaining backward compatibility for at least one major release.
+- **Presets** pin specific plugin version ranges to ensure tested combinations.
 
 ### Deployment
 
