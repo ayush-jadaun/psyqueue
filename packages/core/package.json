@@ -18,7 +18,14 @@
     "lint": "eslint src/",
     "clean": "rm -rf dist"
   },
-  "engines": { "node": ">=20.0.0" },
-  "files": ["dist"],
-  "license": "MIT"
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "files": [
+    "dist"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "ulidx": "^2.4.1"
+  }
 }

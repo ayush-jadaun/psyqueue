@@ -1,3 +1,6 @@
 export * from './types.js'
 export * from './errors.js'
 export { EventBus } from './event-bus.js'
+export { PluginRegistry } from './plugin-registry.js'
+export { MiddlewarePipeline } from './middleware-pipeline.js'
+export { generateId, createJob } from './job.js'
