@@ -53,6 +53,16 @@ importers:
         specifier: ^25.5.0
         version: 25.5.0
 
+  packages/plugin-circuit-breaker:
+    dependencies:
+      psyqueue:
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.4(@types/node@25.5.0)
+
   packages/plugin-crash-recovery:
     dependencies:
       psyqueue:
@@ -107,6 +117,16 @@ importers:
       zod:
         specifier: ^3.24.0
         version: 3.25.76
+    devDependencies:
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.4(@types/node@25.5.0)
+
+  packages/plugin-tenancy:
+    dependencies:
+      psyqueue:
+        specifier: workspace:*
+        version: link:../core
     devDependencies:
       vitest:
         specifier: ^3.0.0
