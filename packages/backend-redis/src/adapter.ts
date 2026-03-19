@@ -115,49 +115,67 @@ export function computePendingScore(priority: number, createdAt: Date): number {
   return (-priority * 1e13) + createdAt.getTime()
 }
 
-// Lua script for atomic dequeue
-// KEYS[1] = pending sorted set key
-// KEYS[2] = active set key
-// KEYS[3] = job hash key prefix (we pass just the prefix, script appends the id)
+// ─── Lua Scripts ──────────────────────────────────────────────────────────────
+
+// Dequeue Lua: RPOP N job IDs from the ready list, activate each one atomically
+// KEYS[1] = ready list key
+// KEYS[2] = active sorted set key
+// KEYS[3] = job hash key prefix
 // ARGV[1] = count
 // ARGV[2] = started_at ISO string
-// Returns: array of [id, token, id, token, ...] pairs (flattened)
+// Returns: array of [id, token, jsonEncodedHashData, ...] triplets
 export const DEQUEUE_SCRIPT = `
-local pending_key = KEYS[1]
+local ready_key = KEYS[1]
 local active_key = KEYS[2]
 local hash_prefix = KEYS[3]
 local count = tonumber(ARGV[1])
 local started_at = ARGV[2]
 
-local ids = redis.call('ZRANGE', pending_key, 0, count - 1)
-if #ids == 0 then
-  return {}
-end
-
 local results = {}
 local time = redis.call('TIME')
-for _, id in ipairs(ids) do
-  local token = id .. ':' .. time[1] .. time[2]
-  redis.call('ZREM', pending_key, id)
-  redis.call('ZADD', active_key, time[1], id)
+
+for i = 1, count do
+  local id = redis.call('RPOP', ready_key)
+  if not id then break end
+
   local hash_key = hash_prefix .. id
-  redis.call('HSET', hash_key, 'status', 'active', 'started_at', started_at, 'completion_token', token)
-  -- Return full job data inline (avoids extra HGETALL round-trip)
-  local data = redis.call('HGETALL', hash_key)
-  table.insert(results, id)
-  table.insert(results, token)
-  table.insert(results, cjson.encode(data))
+  local exists = redis.call('EXISTS', hash_key)
+  if exists == 1 then
+    local token = id .. ':' .. time[1] .. time[2]
+    redis.call('ZADD', active_key, time[1], id)
+    redis.call('HSET', hash_key, 'status', 'active', 'started_at', started_at, 'completion_token', token)
+    local data = redis.call('HGETALL', hash_key)
+    table.insert(results, id)
+    table.insert(results, token)
+    table.insert(results, cjson.encode(data))
+  end
 end
 return results
 `
 
-// Lua script for atomic ack
-// KEYS[1] = active set key
-// KEYS[2] = completed set key
-// KEYS[3] = job hash key
-// ARGV[1] = completion token (or '' to skip check)
-// ARGV[2] = completed_at ISO string
-// Returns: 0 = already completed (token mismatch), 1 = success
+// Activate a single job after BRPOPLPUSH returns its ID
+// KEYS[1] = active sorted set key
+// KEYS[2] = job hash key
+// ARGV[1] = completion token
+// ARGV[2] = started_at ISO string
+// ARGV[3] = job_id
+// Returns: cjson-encoded HGETALL array, or nil if job hash is missing
+export const ACTIVATE_SCRIPT = `
+local active_key = KEYS[1]
+local hash_key = KEYS[2]
+local token = ARGV[1]
+local started_at = ARGV[2]
+local job_id = ARGV[3]
+
+local exists = redis.call('EXISTS', hash_key)
+if exists == 0 then return nil end
+
+local t = redis.call('TIME')
+redis.call('ZADD', active_key, t[1], job_id)
+redis.call('HSET', hash_key, 'status', 'active', 'started_at', started_at, 'completion_token', token)
+return cjson.encode(redis.call('HGETALL', hash_key))
+`
+
 // Single-call ack script: reads queue from hash, verifies token, moves to completed
 // KEYS[1] = hash key, KEYS[2] = key prefix (e.g. 'psyqueue:')
 // ARGV[1] = token, ARGV[2] = completed_at, ARGV[3] = jobId
@@ -182,7 +200,8 @@ redis.call('HSET', hash_key, 'status', 'completed', 'completed_at', completed_at
 return 1
 `
 
-// Single Lua script for nack — handles requeue, dead-letter, fail in one call
+// Nack Lua: handles requeue, dead-letter, fail in one call
+// For requeue: pushes job ID back to the ready list (RPUSH) or to pending sorted set if delayed
 // KEYS[1] = hash key, KEYS[2] = key prefix
 // ARGV[1] = jobId, ARGV[2] = mode (requeue|dead|fail), ARGV[3] = error json
 // ARGV[4] = delay ms, ARGV[5] = now ms
@@ -216,31 +235,86 @@ local attempt = tonumber(redis.call('HGET', hash_key, 'attempt') or '1')
 local new_attempt = attempt + 1
 local priority = tonumber(redis.call('HGET', hash_key, 'priority') or '0')
 
-local score
-local run_at = ''
 if delay_ms > 0 then
-  score = now_ms + delay_ms
-  run_at = tostring(score)
-else
-  score = -priority * 10000000000000 + now_ms
+  -- Delayed retry: push to the scheduled sorted set (score = future timestamp)
+  local score = now_ms + delay_ms
+  local run_at = tostring(score)
+  redis.call('HSET', hash_key, 'status', 'pending', 'attempt', tostring(new_attempt), 'run_at', run_at)
+  redis.call('ZADD', prefix .. 'scheduled', score, job_id)
+  return 1
 end
 
-redis.call('HSET', hash_key, 'status', 'pending', 'attempt', tostring(new_attempt), 'run_at', run_at)
-redis.call('ZADD', prefix .. queue .. ':pending', score, job_id)
+-- Immediate retry: push directly to the ready list
+redis.call('HSET', hash_key, 'status', 'pending', 'attempt', tostring(new_attempt), 'run_at', '')
+if priority > 0 then
+  -- High-priority requeues go to the front of the ready list
+  redis.call('LPUSH', prefix .. queue .. ':ready', job_id)
+else
+  redis.call('RPUSH', prefix .. queue .. ':ready', job_id)
+end
 return 1
 `
 
-// Lua script for pollScheduled
+// Promote Lua: pop items from the priority sorted set and LPUSH to the front of the ready list
+// KEYS[1] = priority sorted set key
+// KEYS[2] = ready list key
+// ARGV[1] = count (how many to promote)
+// Returns: number promoted
+export const PROMOTE_SCRIPT = `
+local priority_key = KEYS[1]
+local ready_key = KEYS[2]
+local count = tonumber(ARGV[1])
+
+local ids = redis.call('ZPOPMIN', priority_key, count)
+if #ids == 0 then return 0 end
+
+local promoted = 0
+for i = 1, #ids, 2 do
+  local id = ids[i]
+  -- LPUSH to front of list so priority jobs are dequeued before normal jobs
+  redis.call('LPUSH', ready_key, id)
+  promoted = promoted + 1
+end
+return promoted
+`
+
+// Enqueue with priority: ZADD to priority sorted set + immediately promote all to ready list
+// KEYS[1] = priority sorted set key
+// KEYS[2] = ready list key
+// ARGV[1] = score
+// ARGV[2] = job_id
+// Returns: number promoted
+export const ENQUEUE_PRIORITY_SCRIPT = `
+local priority_key = KEYS[1]
+local ready_key = KEYS[2]
+local score = tonumber(ARGV[1])
+local job_id = ARGV[2]
+
+redis.call('ZADD', priority_key, score, job_id)
+
+-- Promote all from priority set to front of ready list (maintains priority order)
+local ids = redis.call('ZPOPMIN', priority_key, 100)
+local promoted = 0
+for i = 1, #ids, 2 do
+  local id = ids[i]
+  redis.call('LPUSH', ready_key, id)
+  promoted = promoted + 1
+end
+return promoted
+`
+
+// Poll scheduled: move due jobs from scheduled set to the ready list
 // KEYS[1] = scheduled sorted set key
-// KEYS[2] = pending sorted set key
+// KEYS[2] = ready list key (for priority=0 jobs)
 // KEYS[3] = hash prefix
+// KEYS[4] = priority sorted set prefix (e.g. 'psyqueue:')
 // ARGV[1] = current timestamp (ms)
 // ARGV[2] = limit
-// Returns: array of job ids moved to pending
+// Returns: array of job ids moved
 export const POLL_SCHEDULED_SCRIPT = `
 local scheduled_key = KEYS[1]
-local pending_key = KEYS[2]
-local hash_prefix = KEYS[3]
+local hash_prefix = KEYS[2]
+local prefix = KEYS[3]
 local now_ms = tonumber(ARGV[1])
 local limit = tonumber(ARGV[2])
 
@@ -253,39 +327,29 @@ for _, id in ipairs(ids) do
   redis.call('ZREM', scheduled_key, id)
   local hash_key = hash_prefix .. id
   local priority = tonumber(redis.call('HGET', hash_key, 'priority')) or 0
-  local created_at_str = redis.call('HGET', hash_key, 'created_at')
-  -- Use current time as fallback score
-  local score = (-priority * 10000000000000) + now_ms
-  redis.call('ZADD', pending_key, score, id)
+  local queue = redis.call('HGET', hash_key, 'queue') or 'default'
   redis.call('HSET', hash_key, 'status', 'pending')
+
+  local ready_key = prefix .. queue .. ':ready'
+  if priority > 0 then
+    -- Priority jobs: ZADD to priority sorted set, then promote to front of ready list
+    local created_at_str = redis.call('HGET', hash_key, 'created_at')
+    local score = (-priority * 10000000000000) + now_ms
+    local pkey = prefix .. queue .. ':priority'
+    redis.call('ZADD', pkey, score, id)
+    -- Promote all from priority set
+    local pids = redis.call('ZPOPMIN', pkey, 100)
+    for pi = 1, #pids, 2 do
+      redis.call('LPUSH', ready_key, pids[pi])
+    end
+  else
+    redis.call('RPUSH', ready_key, id)
+  end
 end
 return ids
 `
 
-// Lua script for activating a job after BZPOPMIN has popped it
-// KEYS[1] = active sorted set key
-// KEYS[2] = job hash key
-// ARGV[1] = completion token
-// ARGV[2] = started_at ISO string
-// ARGV[3] = job_id
-// Returns: cjson-encoded HGETALL array, or nil if job hash is missing
-export const ACTIVATE_SCRIPT = `
-local active_key = KEYS[1]
-local hash_key = KEYS[2]
-local token = ARGV[1]
-local started_at = ARGV[2]
-local job_id = ARGV[3]
-
-local exists = redis.call('EXISTS', hash_key)
-if exists == 0 then return nil end
-
-local t = redis.call('TIME')
-redis.call('ZADD', active_key, t[1], job_id)
-redis.call('HSET', hash_key, 'status', 'active', 'started_at', started_at, 'completion_token', token)
-return cjson.encode(redis.call('HGETALL', hash_key))
-`
-
-// Lua script for batch activating multiple jobs after BZPOPMIN + ZPOPMIN
+// Batch activate script (used after BRPOPLPUSH + batch pop)
 // KEYS[1] = active sorted set key
 // KEYS[2..N] = job hash keys
 // ARGV[1] = started_at ISO string
@@ -317,7 +381,7 @@ export class RedisBackendAdapter implements BackendAdapter {
   readonly supportsBlocking = true
 
   private client: any = null
-  /** Single blocking client -- created once, reused for all BZPOPMIN calls */
+  /** Single blocking client -- created once, reused for all BRPOPLPUSH calls */
   private blockingClient: any = null
   private readonly opts: RedisAdapterOpts
   private readonly prefix: string
@@ -335,12 +399,29 @@ export class RedisBackendAdapter implements BackendAdapter {
     return `${this.prefix}:job:${id}`
   }
 
+  /** Ready list — main dequeue source (LIST) */
+  private readyKey(queue: string): string {
+    return `${this.prefix}:${queue}:ready`
+  }
+
+  /** Priority sorted set — only used for priority > 0 jobs before promotion to ready list */
+  private priorityKey(queue: string): string {
+    return `${this.prefix}:${queue}:priority`
+  }
+
+  /** @internal Kept for test key-naming assertions */
+  // @ts-expect-error TS6133: pendingKey is accessed by tests via cast
   private pendingKey(queue: string): string {
     return `${this.prefix}:${queue}:pending`
   }
 
   private activeKey(queue: string): string {
     return `${this.prefix}:${queue}:active`
+  }
+
+  /** Processing list — BRPOPLPUSH destination for in-flight tracking */
+  private processingKey(queue: string): string {
+    return `${this.prefix}:${queue}:processing`
   }
 
   private scheduledKey(): string {
@@ -406,12 +487,28 @@ export class RedisBackendAdapter implements BackendAdapter {
   async enqueue(job: Job): Promise<string> {
     const client = this.getClient()
     const hash = serializeJobToHash(job)
-    const score = computePendingScore(job.priority, job.createdAt)
 
-    const pipeline = client.pipeline()
-    pipeline.hset(this.jobKey(job.id), hash)
-    pipeline.zadd(this.pendingKey(job.queue), score, job.id)
-    await pipeline.exec()
+    if (job.priority > 0) {
+      // Priority path: HSET + ZADD to priority sorted set + promote to ready list
+      const score = computePendingScore(job.priority, job.createdAt)
+      const pipeline = client.pipeline()
+      pipeline.hset(this.jobKey(job.id), hash)
+      pipeline.eval(
+        ENQUEUE_PRIORITY_SCRIPT,
+        2,
+        this.priorityKey(job.queue),
+        this.readyKey(job.queue),
+        String(score),
+        job.id,
+      )
+      await pipeline.exec()
+    } else {
+      // Fast path (priority=0): HSET + RPUSH job ID to ready list
+      const pipeline = client.pipeline()
+      pipeline.hset(this.jobKey(job.id), hash)
+      pipeline.rpush(this.readyKey(job.queue), job.id)
+      await pipeline.exec()
+    }
 
     return job.id
   }
@@ -420,11 +517,39 @@ export class RedisBackendAdapter implements BackendAdapter {
     const client = this.getClient()
     const pipeline = client.pipeline()
 
+    // Group jobs by queue for batching RPUSH calls
+    const readyPushes = new Map<string, string[]>()
+    const priorityJobs: Job[] = []
+
     for (const job of jobs) {
       const hash = serializeJobToHash(job)
-      const score = computePendingScore(job.priority, job.createdAt)
       pipeline.hset(this.jobKey(job.id), hash)
-      pipeline.zadd(this.pendingKey(job.queue), score, job.id)
+
+      if (job.priority > 0) {
+        priorityJobs.push(job)
+      } else {
+        const key = this.readyKey(job.queue)
+        if (!readyPushes.has(key)) readyPushes.set(key, [])
+        readyPushes.get(key)!.push(job.id)
+      }
+    }
+
+    // Batch RPUSH for all normal-priority jobs per queue
+    for (const [key, ids] of readyPushes) {
+      pipeline.rpush(key, ...ids)
+    }
+
+    // Priority jobs: ZADD + promote for each
+    for (const job of priorityJobs) {
+      const score = computePendingScore(job.priority, job.createdAt)
+      pipeline.eval(
+        ENQUEUE_PRIORITY_SCRIPT,
+        2,
+        this.priorityKey(job.queue),
+        this.readyKey(job.queue),
+        String(score),
+        job.id,
+      )
     }
 
     await pipeline.exec()
@@ -435,10 +560,11 @@ export class RedisBackendAdapter implements BackendAdapter {
     const client = this.getClient()
     const startedAt = new Date().toISOString()
 
+    // Single Lua call: RPOP N from ready list + activate each
     const results = await client.eval(
       DEQUEUE_SCRIPT,
       3,
-      this.pendingKey(queue),
+      this.readyKey(queue),
       this.activeKey(queue),
       this.jobHashPrefix(),
       String(count),
@@ -610,25 +736,25 @@ export class RedisBackendAdapter implements BackendAdapter {
   private async _pollScheduledImpl(now: Date, limit: number): Promise<Job[]> {
     const client = this.getClient()
 
-    // Get due job IDs from the scheduled set
-    const ids = await client.zrangebyscore(this.scheduledKey(), '-inf', now.getTime(), 'LIMIT', 0, limit)
-    if (ids.length === 0) return []
+    // Single Lua call: move due jobs from scheduled set → ready list
+    const ids = await client.eval(
+      POLL_SCHEDULED_SCRIPT,
+      3,
+      this.scheduledKey(),
+      this.jobHashPrefix(),
+      this.keyPrefix(),
+      String(now.getTime()),
+      String(limit),
+    ) as string[]
 
+    if (!ids || ids.length === 0) return []
+
+    // Fetch the updated job data for the return value
     const results: Job[] = []
     for (const id of ids) {
       const hashData = await client.hgetall(this.jobKey(id))
       if (!hashData || Object.keys(hashData).length === 0) continue
-
-      const job = deserializeJobFromHash(hashData)
-      const score = computePendingScore(job.priority, job.createdAt)
-
-      const pipeline = client.pipeline()
-      pipeline.zrem(this.scheduledKey(), id)
-      pipeline.zadd(this.pendingKey(job.queue), score, id)
-      pipeline.hset(this.jobKey(id), 'status', 'pending')
-      await pipeline.exec()
-
-      results.push({ ...job, status: 'pending' })
+      results.push(deserializeJobFromHash(hashData))
     }
 
     return results
@@ -690,21 +816,26 @@ export class RedisBackendAdapter implements BackendAdapter {
 
     const timeoutSec = Math.max(1, Math.ceil(timeoutMs / 1000))
 
-    let result: any
+    let jobId: string | null = null
     try {
-      result = await blockingClient.bzpopmin(this.pendingKey(queue), timeoutSec)
+      // BRPOPLPUSH: pop from ready list, push to processing list
+      // Returns the job ID string (the value that was in the list), or null on timeout
+      jobId = await blockingClient.brpoplpush(
+        this.readyKey(queue),
+        this.processingKey(queue),
+        timeoutSec,
+      )
     } catch {
       return []
     }
 
-    // result = [key, member, score] or null on timeout
-    if (!result) return []
+    // null on timeout
+    if (!jobId) return []
 
-    const jobId = result[1] as string // the member (job ID)
     const token = `${jobId}:${Date.now()}`
     const startedAt = new Date().toISOString()
 
-    // Activate the job using the command client (non-blocking)
+    // Activate the job using the command client (non-blocking) — 1 Lua call
     const rawData = await commandClient.eval(
       ACTIVATE_SCRIPT,
       2,
@@ -717,6 +848,9 @@ export class RedisBackendAdapter implements BackendAdapter {
 
     if (!rawData) return []
 
+    // Clean up from processing list
+    commandClient.lrem(this.processingKey(queue), 1, jobId).catch(() => {})
+
     const dataArray: string[] = JSON.parse(rawData)
     const hashData: Record<string, string> = {}
     for (let j = 0; j < dataArray.length; j += 2) {
@@ -728,7 +862,7 @@ export class RedisBackendAdapter implements BackendAdapter {
   }
 
   async batchDequeue(queue: string, count: number): Promise<DequeuedJob[]> {
-    // Non-blocking batch dequeue: just use the existing dequeue
+    // Non-blocking batch dequeue: just use the existing dequeue (single Lua RPOP N)
     return this.dequeue(queue, count)
   }
 
