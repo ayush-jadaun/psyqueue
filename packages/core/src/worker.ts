@@ -240,7 +240,7 @@ export class WorkerPool {
     const ctx = createContext(job, 'process', {
       enqueue: (n, p, o) => this.internals.enqueue(n, p, o),
       updateJob: async (id, updates) => {
-        await backend.nack(id, {})
+        await backend.atomic([{ type: 'update', jobId: id, updates }])
         Object.assign(job, updates)
       },
     })

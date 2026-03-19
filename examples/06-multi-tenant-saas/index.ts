@@ -35,27 +35,18 @@ async function main() {
     tiers: {
       free: {
         weight: 1,               // Gets 1 "share" of scheduling
-        rateLimit: {
-          max: 3,                // Only 3 enqueues per window
-          window: 60_000,        // 1-minute sliding window
-        },
-        maxConcurrency: 1,
-        maxJobsPerMinute: 3,
-        features: ['basic'],
+        rateLimit: { max: 3, window: '1m' },  // 3 enqueues per minute
+        concurrency: 1,
       },
       pro: {
-        weight: 5,               // Gets 5× more scheduling weight than free
-        rateLimit: { max: 50, window: 60_000 },
-        maxConcurrency: 10,
-        maxJobsPerMinute: 50,
-        features: ['basic', 'priority', 'webhooks'],
+        weight: 5,               // Gets 5x more scheduling weight than free
+        rateLimit: { max: 50, window: '1m' },
+        concurrency: 10,
       },
       enterprise: {
         weight: 20,              // Highest scheduling priority
-        rateLimit: { max: 500, window: 60_000 },
-        maxConcurrency: 100,
-        maxJobsPerMinute: 500,
-        features: ['basic', 'priority', 'webhooks', 'dedicated', 'sla'],
+        rateLimit: { max: 500, window: '1m' },
+        concurrency: 100,
       },
     },
     resolveTier: async (tenantId: string) => {

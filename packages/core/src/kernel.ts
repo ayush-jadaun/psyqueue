@@ -232,7 +232,7 @@ export class PsyQueue {
     const ctx = createContext(job, 'enqueue', {
       enqueue: (n, p, o) => this.enqueue(n, p, o),
       updateJob: async (id, updates) => {
-        await backend.nack(id, {})
+        await backend.atomic([{ type: 'update', jobId: id, updates }])
         Object.assign(job, updates)
       },
     })
@@ -292,7 +292,7 @@ export class PsyQueue {
     const ctx = createContext(job, 'process', {
       enqueue: (n, p, o) => this.enqueue(n, p, o),
       updateJob: async (id, updates) => {
-        await backend.nack(id, {}) // simple approach
+        await backend.atomic([{ type: 'update', jobId: id, updates }])
         Object.assign(job, updates)
       },
     })

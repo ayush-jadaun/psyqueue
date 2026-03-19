@@ -27,24 +27,18 @@ async function main() {
     tiers: {
       free: {
         weight: 1,
-        rateLimit: { max: 10, window: 60_000 },
-        maxConcurrency: 2,
-        maxJobsPerMinute: 10,
-        features: ['basic'],
+        rateLimit: { max: 10, window: '1m' },
+        concurrency: 2,
       },
       pro: {
         weight: 5,
-        rateLimit: { max: 100, window: 60_000 },
-        maxConcurrency: 10,
-        maxJobsPerMinute: 100,
-        features: ['basic', 'priority', 'webhooks'],
+        rateLimit: { max: 100, window: '1m' },
+        concurrency: 10,
       },
       enterprise: {
         weight: 10,
-        rateLimit: { max: 1000, window: 60_000 },
-        maxConcurrency: 50,
-        maxJobsPerMinute: 1000,
-        features: ['basic', 'priority', 'webhooks', 'dedicated'],
+        rateLimit: { max: 1000, window: '1m' },
+        concurrency: 50,
       },
     },
     resolveTier: async (tenantId: string) => {

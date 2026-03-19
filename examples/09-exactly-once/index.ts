@@ -114,7 +114,7 @@ async function main() {
     )
   } catch (err) {
     if (err instanceof DuplicateJobError) {
-      console.log(`  DuplicateJobError: key="${err.idempotencyKey}"  originalJobId=${err.originalJobId?.slice(0, 8)}`)
+      console.log(`  DuplicateJobError: key="${err.context?.['idempotencyKey']}"  existingJobId=${err.existingJobId?.slice(0, 8)}`)
       console.log('  Double-submit blocked — transfer will only run once.')
     } else {
       throw err
