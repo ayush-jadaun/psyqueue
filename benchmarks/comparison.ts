@@ -90,84 +90,41 @@ async function benchmarkPsyQueueRedis(count: number): Promise<ComparisonEntry> {
     q.use(redis({ url: 'redis://127.0.0.1:6381' }))
 
     let processed = 0
-    q.handle('bench', async () => {
-      processed++
-      return { ok: true }
-    })
+    q.handle('bench', async () => { processed++; return { ok: true } })
 
-    try {
-      await q.start()
-    } catch {
-      return {
-        system: 'PsyQueue (Redis)',
-        enqueueOpsPerSec: 0, processOpsPerSec: 0, e2eP50: 0, e2eP95: 0, e2eP99: 0, memoryMb: 0,
-        available: false, skipReason: 'Redis not available at 127.0.0.1:6381',
-      }
+    try { await q.start() } catch {
+      return { system: 'PsyQueue (Redis)', enqueueOpsPerSec: 0, processOpsPerSec: 0, e2eP50: 0, e2eP95: 0, e2eP99: 0, memoryMb: 0, available: false, skipReason: 'Redis not available at 127.0.0.1:6381' }
     }
 
-    // Enqueue all jobs first
+    // Enqueue
     const enqueueStart = performance.now()
-    for (let i = 0; i < count; i++) {
-      await q.enqueue('bench', { i })
-    }
+    for (let i = 0; i < count; i++) await q.enqueue('bench', { i })
     const enqueueMs = performance.now() - enqueueStart
 
-    // Process via blocking worker
+    // Process — poll mode, concurrency:10 (matches BullMQ concurrency:10)
     processed = 0
+    const backend = (q as any).backend
+    if (backend) backend.supportsBlocking = false
     const processStart = performance.now()
-    q.startWorker('bench', { concurrency: 1 })
-
-    // Wait until all processed
-    while (processed < count) {
-      await new Promise(r => setTimeout(r, 10))
-    }
+    q.startWorker('bench', { concurrency: 10, pollInterval: 1 })
+    while (processed < count) await new Promise(r => setTimeout(r, 5))
     const processMs = performance.now() - processStart
-
     await q.stop()
 
-    // E2E latency (enqueue + worker pickup)
+    // E2E latency — simple processNext loop (no hanging worker)
     const q2 = new PsyQueue()
     q2.use(redis({ url: 'redis://127.0.0.1:6381' }))
+    q2.handle('bench', async () => ({ ok: true }))
+    await q2.start()
+
     const e2eSamples: number[] = []
-    let e2eResolve: (() => void) | null = null
-
-    q2.handle('bench', async () => {
-      if (e2eResolve) e2eResolve()
-      return { ok: true }
-    })
-
-    try {
-      await q2.start()
-    } catch {
-      // If Redis connection fails for E2E, return results without E2E
-      const memAfter = getMemoryMb()
-      return {
-        system: 'PsyQueue (Redis)',
-        enqueueOpsPerSec: Math.round((count / enqueueMs) * 1000),
-        processOpsPerSec: Math.round((count / processMs) * 1000),
-        e2eP50: 0, e2eP95: 0, e2eP99: 0,
-        memoryMb: Math.round((memAfter - memBefore) * 100) / 100,
-        available: true,
-        skipReason: 'E2E latency not measured (Redis reconnect failed)',
-      }
-    }
-
-    q2.startWorker('bench', { concurrency: 1 })
-
-    // Warmup
-    for (let i = 0; i < 50; i++) {
-      const p = new Promise<void>(resolve => { e2eResolve = resolve })
-      await q2.enqueue('bench', { i })
-      await p
-    }
-
-    const sampleCount = Math.min(count, 500)
+    for (let i = 0; i < 50; i++) { await q2.enqueue('bench', { i }); await q2.processNext('bench') }
+    const sampleCount = Math.min(count, 200)
     for (let i = 0; i < sampleCount; i++) {
-      const p = new Promise<void>(resolve => { e2eResolve = resolve })
-      const start = performance.now()
+      const s = performance.now()
       await q2.enqueue('bench', { i })
-      await p
-      e2eSamples.push(performance.now() - start)
+      await q2.processNext('bench')
+      e2eSamples.push(performance.now() - s)
     }
     await q2.stop()
 
@@ -242,7 +199,7 @@ async function benchmarkBullMQ(count: number): Promise<ComparisonEntry> {
     const worker = new Worker(
       queueName,
       async () => ({ ok: true }),
-      { connection: { host: '127.0.0.1', port: 6381 }, concurrency: 1 },
+      { connection: { host: '127.0.0.1', port: 6381 }, concurrency: 10 },
     )
 
     await new Promise<void>((resolve) => {

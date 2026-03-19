@@ -23,10 +23,24 @@ interface WorkerInternals {
   calculateBackoff: (job: Job) => number
 }
 
+/**
+ * Single-loop semaphore worker architecture.
+ *
+ * ONE dequeue loop with a semaphore controlling concurrency.
+ * - 1 blocking connection (BZPOPMIN) + 1 command connection = 2 Redis connections total
+ * - Semaphore limits parallelism (concurrency:10 = up to 10 handlers running)
+ * - Non-blocking batch grab with local buffer reduces Redis round-trips
+ * - BZPOPMIN only used when queue is empty (efficient blocking wait)
+ * - Non-blocking dispatch: loop doesn't wait for handlers, keeps pulling
+ */
 export class WorkerPool {
   private running = false
   private stopping = false
-  private workerPromises: Promise<void>[] = []
+  private loopPromise: Promise<void> | null = null
+  private activeCount = 0
+  private pendingResolves: Array<() => void> = []
+  /** Local buffer of pre-fetched jobs ready for dispatch */
+  private jobBuffer: DequeuedJob[] = []
 
   constructor(
     private queue: string,
@@ -41,43 +55,142 @@ export class WorkerPool {
   start(): void {
     this.running = true
     this.stopping = false
-    const concurrency = this.opts.concurrency ?? 1
-    for (let i = 0; i < concurrency; i++) {
-      this.workerPromises.push(this.workerLoop(i))
-    }
+    this.loopPromise = this.dequeueLoop()
   }
 
   async stop(): Promise<void> {
     this.stopping = true
-    await Promise.allSettled(this.workerPromises)
+    // Wake up any waitForCapacity that's blocking
+    for (const resolve of this.pendingResolves) {
+      resolve()
+    }
+    this.pendingResolves = []
+    // Wait for dequeue loop to exit
+    if (this.loopPromise) await this.loopPromise
+    // Wait for all in-flight handlers to complete
+    while (this.activeCount > 0) {
+      await new Promise(r => setTimeout(r, 10))
+    }
     this.running = false
-    this.workerPromises = []
+    this.loopPromise = null
   }
 
   get isRunning(): boolean {
     return this.running
   }
 
-  private async workerLoop(_workerId: number): Promise<void> {
+  private get concurrency(): number {
+    return this.opts.concurrency ?? 1
+  }
+
+  private get freeSlots(): number {
+    return this.concurrency - this.activeCount
+  }
+
+  /** How many jobs to grab per Redis call (buffer + concurrency) */
+  private get fetchSize(): number {
+    // Grab a multiple of concurrency to reduce round-trips
+    // batchSize controls this; defaults to 2x concurrency for throughput
+    return this.opts.batchSize ?? Math.max(this.concurrency * 2, 10)
+  }
+
+  /**
+   * Wait until at least 1 concurrency slot is free.
+   * Returns immediately if slots are available.
+   */
+  private async waitForCapacity(): Promise<void> {
+    if (this.freeSlots > 0) return
+    return new Promise(resolve => {
+      this.pendingResolves.push(resolve)
+    })
+  }
+
+  /**
+   * Release a concurrency slot after a handler completes.
+   * Wakes up the dequeue loop if it was waiting for capacity.
+   */
+  private releaseSlot(): void {
+    this.activeCount--
+    const next = this.pendingResolves.shift()
+    if (next) next()
+  }
+
+  /**
+   * Dispatch jobs from the buffer up to available concurrency slots.
+   * Returns number of jobs dispatched.
+   */
+  private dispatchFromBuffer(): number {
+    let dispatched = 0
+    while (this.jobBuffer.length > 0 && this.freeSlots > 0) {
+      const job = this.jobBuffer.shift()!
+      this.activeCount++
+      this.processJob(job).finally(() => this.releaseSlot())
+      dispatched++
+    }
+    return dispatched
+  }
+
+  /**
+   * Single dequeue loop -- the heart of the architecture.
+   *
+   * Strategy for blocking backends:
+   * 1. Dispatch any buffered jobs first (no Redis call needed)
+   * 2. If buffer empty, try non-blocking batch grab (fast path)
+   * 3. If queue empty, fall back to BZPOPMIN (blocking wait)
+   * 4. After BZPOPMIN unblocks, batch-grab more to fill buffer
+   *
+   * Strategy for polling backends:
+   * - Standard poll with sleep when queue is empty
+   */
+  private async dequeueLoop(): Promise<void> {
+    let queueWasEmpty = false
+
     while (!this.stopping) {
       try {
+        // First, dispatch any buffered jobs without touching Redis
+        if (this.jobBuffer.length > 0) {
+          await this.waitForCapacity()
+          if (this.stopping) break
+          this.dispatchFromBuffer()
+          // If buffer still has jobs, loop again to dispatch more
+          if (this.jobBuffer.length > 0) continue
+        }
+
+        // Buffer empty -- need to fetch from Redis
+        // Wait until at least 1 slot is free before fetching
+        await this.waitForCapacity()
+        if (this.stopping) break
+
         let jobs: DequeuedJob[]
 
         if (this.backend.supportsBlocking && this.backend.blockingDequeue) {
-          // Blocking mode -- waits efficiently for jobs
-          jobs = await this.backend.blockingDequeue(this.queue, this.opts.blockTimeout ?? 5000)
+          if (!queueWasEmpty && this.backend.batchDequeue) {
+            // FAST PATH: non-blocking batch grab
+            // Grab more than concurrency to build up buffer
+            jobs = await this.backend.batchDequeue(this.queue, this.fetchSize)
 
-          // After unblocking, grab more if available (batch)
-          if (jobs.length > 0 && this.backend.batchDequeue && (this.opts.batchSize ?? 1) > 1) {
-            const remaining = (this.opts.batchSize ?? 1) - jobs.length
-            if (remaining > 0) {
-              const more = await this.backend.batchDequeue(this.queue, remaining)
+            if (jobs.length === 0) {
+              queueWasEmpty = true
+              continue
+            }
+            queueWasEmpty = false
+          } else {
+            // BLOCKING PATH: queue was empty, wait with BZPOPMIN
+            jobs = await this.backend.blockingDequeue(this.queue, this.opts.blockTimeout ?? 5000)
+
+            if (jobs.length === 0) continue // timeout
+
+            // Queue active again, grab more to fill buffer
+            queueWasEmpty = false
+            if (this.backend.batchDequeue) {
+              const more = await this.backend.batchDequeue(this.queue, this.fetchSize - jobs.length)
               jobs.push(...more)
             }
           }
         } else {
-          // Poll mode for non-blocking backends (SQLite)
-          jobs = await this.backend.dequeue(this.queue, this.opts.batchSize ?? 1)
+          // POLL MODE for non-blocking backends (SQLite, etc.)
+          const count = Math.max(1, this.freeSlots)
+          jobs = await this.backend.dequeue(this.queue, count)
           if (jobs.length === 0) {
             if (this.stopping) break
             await new Promise(r => setTimeout(r, this.opts.pollInterval ?? 50))
@@ -85,16 +198,16 @@ export class WorkerPool {
           }
         }
 
-        if (jobs.length === 0) continue // timeout on blocking dequeue
-
-        // Process jobs -- if batch, process in parallel
-        if (jobs.length === 1) {
-          await this.processJob(jobs[0]!)
-        } else {
-          await Promise.allSettled(jobs.map(job => this.processJob(job)))
+        // Dispatch up to concurrency, buffer the rest
+        for (const job of jobs) {
+          if (this.freeSlots > 0) {
+            this.activeCount++
+            this.processJob(job).finally(() => this.releaseSlot())
+          } else {
+            this.jobBuffer.push(job)
+          }
         }
-      } catch (err) {
-        // Worker loop error -- log and continue with backoff
+      } catch {
         if (!this.stopping) {
           await new Promise(r => setTimeout(r, 1000))
         }

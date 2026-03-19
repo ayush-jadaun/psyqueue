@@ -285,13 +285,40 @@ redis.call('HSET', hash_key, 'status', 'active', 'started_at', started_at, 'comp
 return cjson.encode(redis.call('HGETALL', hash_key))
 `
 
+// Lua script for batch activating multiple jobs after BZPOPMIN + ZPOPMIN
+// KEYS[1] = active sorted set key
+// KEYS[2..N] = job hash keys
+// ARGV[1] = started_at ISO string
+// ARGV[2..N] = completion tokens (one per job)
+// Returns: array of [token, cjson(HGETALL)] pairs
+export const BATCH_ACTIVATE_SCRIPT = `
+local active_key = KEYS[1]
+local started_at = ARGV[1]
+local t = redis.call('TIME')
+local results = {}
+
+for i = 2, #KEYS do
+  local hash_key = KEYS[i]
+  local token = ARGV[i]
+  local job_id = redis.call('HGET', hash_key, 'id')
+  if job_id then
+    redis.call('ZADD', active_key, t[1], job_id)
+    redis.call('HSET', hash_key, 'status', 'active', 'started_at', started_at, 'completion_token', token)
+    table.insert(results, token)
+    table.insert(results, cjson.encode(redis.call('HGETALL', hash_key)))
+  end
+end
+return results
+`
+
 export class RedisBackendAdapter implements BackendAdapter {
   readonly name = 'redis'
   readonly type = 'redis'
   readonly supportsBlocking = true
 
   private client: any = null
-  private blockingClients: any[] = []
+  /** Single blocking client -- created once, reused for all BZPOPMIN calls */
+  private blockingClient: any = null
   private readonly opts: RedisAdapterOpts
   private readonly prefix: string
 
@@ -354,11 +381,11 @@ export class RedisBackendAdapter implements BackendAdapter {
   }
 
   async disconnect(): Promise<void> {
-    // Close all blocking clients first
-    for (const bc of this.blockingClients) {
-      await bc.quit().catch(() => {})
+    // Close the single blocking client first
+    if (this.blockingClient) {
+      await this.blockingClient.quit().catch(() => {})
+      this.blockingClient = null
     }
-    this.blockingClients = []
 
     if (this.client) {
       await this.client.quit()
@@ -654,7 +681,11 @@ export class RedisBackendAdapter implements BackendAdapter {
   }
 
   async blockingDequeue(queue: string, timeoutMs: number): Promise<DequeuedJob[]> {
-    const blockingClient = await this.createBlockingClient()
+    // Create ONE blocking client on first call, then reuse it forever
+    if (!this.blockingClient) {
+      this.blockingClient = await this.createBlockingClient()
+    }
+    const blockingClient = this.blockingClient
     const commandClient = this.getClient()
 
     const timeoutSec = Math.max(1, Math.ceil(timeoutMs / 1000))
@@ -724,11 +755,11 @@ export class RedisBackendAdapter implements BackendAdapter {
   }
 
   private async createBlockingClient(): Promise<any> {
-    let blockingClient: any
+    let client: any
     if (this.opts.url) {
-      blockingClient = new Redis(this.opts.url)
+      client = new Redis(this.opts.url)
     } else {
-      blockingClient = new Redis({
+      client = new Redis({
         host: this.opts.host ?? 'localhost',
         port: this.opts.port ?? 6379,
         password: this.opts.password,
@@ -738,15 +769,14 @@ export class RedisBackendAdapter implements BackendAdapter {
 
     // Wait for ready
     await new Promise<void>((resolve, reject) => {
-      const onReady = () => { blockingClient.off('error', onError); resolve() }
-      const onError = (err: Error) => { blockingClient.off('ready', onReady); reject(err) }
-      blockingClient.once('ready', onReady)
-      blockingClient.once('error', onError)
-      if (blockingClient.status === 'ready') resolve()
+      const onReady = () => { client.off('error', onError); resolve() }
+      const onError = (err: Error) => { client.off('ready', onReady); reject(err) }
+      client.once('ready', onReady)
+      client.once('error', onError)
+      if (client.status === 'ready') resolve()
     })
 
-    this.blockingClients.push(blockingClient)
-    return blockingClient
+    return client
   }
 
   private getClient(): any {
