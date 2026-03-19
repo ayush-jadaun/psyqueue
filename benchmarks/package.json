@@ -15,6 +15,7 @@
     "@psyqueue/backend-redis": "workspace:*",
     "@psyqueue/plugin-workflows": "workspace:*",
     "@psyqueue/plugin-saga": "workspace:*",
+    "@psyqueue/plugin-scheduler": "workspace:*",
     "tsx": "^4.0.0"
   },
   "optionalDependencies": {

@@ -38,6 +38,9 @@ importers:
       '@psyqueue/plugin-saga':
         specifier: workspace:*
         version: link:../packages/plugin-saga
+      '@psyqueue/plugin-scheduler':
+        specifier: workspace:*
+        version: link:../packages/plugin-scheduler
       '@psyqueue/plugin-workflows':
         specifier: workspace:*
         version: link:../packages/plugin-workflows
