@@ -5,7 +5,7 @@
   "scripts": {
     "psyqueue": "tsx psyqueue-server.ts",
     "bullmq": "tsx bullmq-server.ts",
-    "test": "bash run-k6.sh"
+    "k6": "bash run-k6.sh"
   },
   "dependencies": {
     "@psyqueue/backend-redis": "workspace:*",

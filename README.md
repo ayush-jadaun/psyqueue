@@ -2,9 +2,10 @@
 
 > The psychic job queue that adapts to your needs. A micro-kernel distributed job queue platform where everything is a plugin.
 
-[![npm version](https://img.shields.io/npm/v/psyqueue.svg)](https://www.npmjs.com/package/psyqueue)
-[![Tests](https://img.shields.io/github/actions/workflow/status/psyqueue/psyqueue/ci.yml?label=tests)](https://github.com/psyqueue/psyqueue/actions)
+[![npm version](https://img.shields.io/npm/v/@psyqueue/core.svg)](https://www.npmjs.com/package/@psyqueue/core)
+[![CI](https://github.com/ayush-jadaun/psyqueue/actions/workflows/ci.yml/badge.svg)](https://github.com/ayush-jadaun/psyqueue/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![GitHub](https://img.shields.io/github/stars/ayush-jadaun/psyqueue?style=social)](https://github.com/ayush-jadaun/psyqueue)
 
 ## Why PsyQueue?
 
@@ -205,7 +206,7 @@ const { queue, config } = PsyQueue.from('enterprise')
 Contributions are welcome. Please open an issue or pull request on GitHub.
 
 ```bash
-git clone https://github.com/psyqueue/psyqueue.git
+git clone https://github.com/ayush-jadaun/psyqueue.git
 cd psyqueue
 pnpm install
 pnpm build
