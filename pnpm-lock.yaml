@@ -35,12 +35,36 @@ importers:
       '@psyqueue/backend-sqlite':
         specifier: workspace:*
         version: link:../packages/backend-sqlite
+      '@psyqueue/plugin-audit-log':
+        specifier: workspace:*
+        version: link:../packages/plugin-audit-log
+      '@psyqueue/plugin-chaos':
+        specifier: workspace:*
+        version: link:../packages/plugin-chaos
+      '@psyqueue/plugin-circuit-breaker':
+        specifier: workspace:*
+        version: link:../packages/plugin-circuit-breaker
+      '@psyqueue/plugin-exactly-once':
+        specifier: workspace:*
+        version: link:../packages/plugin-exactly-once
+      '@psyqueue/plugin-job-fusion':
+        specifier: workspace:*
+        version: link:../packages/plugin-job-fusion
+      '@psyqueue/plugin-metrics':
+        specifier: workspace:*
+        version: link:../packages/plugin-metrics
       '@psyqueue/plugin-saga':
         specifier: workspace:*
         version: link:../packages/plugin-saga
       '@psyqueue/plugin-scheduler':
         specifier: workspace:*
         version: link:../packages/plugin-scheduler
+      '@psyqueue/plugin-schema-versioning':
+        specifier: workspace:*
+        version: link:../packages/plugin-schema-versioning
+      '@psyqueue/plugin-tenancy':
+        specifier: workspace:*
+        version: link:../packages/plugin-tenancy
       '@psyqueue/plugin-workflows':
         specifier: workspace:*
         version: link:../packages/plugin-workflows
@@ -50,6 +74,9 @@ importers:
       tsx:
         specifier: ^4.0.0
         version: 4.21.0
+      zod:
+        specifier: ^3.24.0
+        version: 3.25.76
     optionalDependencies:
       bullmq:
         specifier: ^5.0.0
