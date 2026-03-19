@@ -1,5 +1,5 @@
 import * as http from 'node:http'
-import type { BackendAdapter, DequeuedJob } from 'psyqueue'
+import type { BackendAdapter, DequeuedJob } from '@psyqueue/core'
 
 export interface HttpServerOpts {
   port: number

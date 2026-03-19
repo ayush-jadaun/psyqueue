@@ -3,7 +3,7 @@ import * as protoLoader from '@grpc/proto-loader'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import type { BackendAdapter, DequeuedJob } from 'psyqueue'
+import type { BackendAdapter, DequeuedJob } from '@psyqueue/core'
 
 export interface GrpcServerOpts {
   port: number

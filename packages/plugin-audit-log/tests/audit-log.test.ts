@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { auditLog } from '../src/index.js'
 import { verifyChain } from '../src/hash-chain.js'
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { sqlite } from '../../backend-sqlite/src/index.js'
 
 function makeQueue(pluginOpts: Parameters<typeof auditLog>[0]): {

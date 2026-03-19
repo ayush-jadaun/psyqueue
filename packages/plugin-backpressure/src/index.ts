@@ -1,4 +1,4 @@
-import type { PsyPlugin, Kernel } from 'psyqueue'
+import type { PsyPlugin, Kernel } from '@psyqueue/core'
 import { SignalMonitor } from './signals.js'
 import { resolveActions } from './actions.js'
 import type { PressureState } from './signals.js'

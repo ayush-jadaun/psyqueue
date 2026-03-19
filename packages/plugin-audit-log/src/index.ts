@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { appendFileSync, mkdirSync, existsSync } from 'node:fs'
 import { dirname } from 'node:path'
-import type { PsyPlugin, Kernel, LifecycleEvent } from 'psyqueue'
+import type { PsyPlugin, Kernel, LifecycleEvent } from '@psyqueue/core'
 import type { AuditEntry, AuditFilter } from './types.js'
 import { computeHash, verifyChain } from './hash-chain.js'
 

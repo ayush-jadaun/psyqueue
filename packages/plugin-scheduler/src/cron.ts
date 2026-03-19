@@ -1,4 +1,4 @@
-import type { BackendAdapter, Job } from 'psyqueue'
+import type { BackendAdapter, Job } from '@psyqueue/core'
 // cron-parser v4 uses CommonJS default export
 import cronParser from 'cron-parser'
 

@@ -1,4 +1,4 @@
-import type { EventBusInterface } from 'psyqueue'
+import type { EventBusInterface } from '@psyqueue/core'
 import type { WorkflowInstance } from '@psyqueue/plugin-workflows'
 import type { WorkflowDefinition } from '@psyqueue/plugin-workflows'
 

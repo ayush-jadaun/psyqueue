@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { linearCurve, exponentialCurve, stepCurve } from '../src/curves.js'
 import { deadlinePriority } from '../src/index.js'
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { sqlite } from '../../backend-sqlite/src/index.js'
 
 // ============================================================================

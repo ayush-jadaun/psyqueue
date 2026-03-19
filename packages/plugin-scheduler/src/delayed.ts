@@ -1,4 +1,4 @@
-import type { BackendAdapter, Job } from 'psyqueue'
+import type { BackendAdapter, Job } from '@psyqueue/core'
 
 export interface DelayedJobPollerOpts {
   /** ms between polling for due scheduled jobs (default: 1000) */

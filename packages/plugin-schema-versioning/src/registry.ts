@@ -1,5 +1,5 @@
 import type { z } from 'zod'
-import type { JobHandler } from 'psyqueue'
+import type { JobHandler } from '@psyqueue/core'
 
 export interface VersionConfig {
   schema: z.ZodSchema

@@ -1,4 +1,4 @@
-import type { PsyPlugin, Kernel, JobHandler, JobContext } from 'psyqueue'
+import type { PsyPlugin, Kernel, JobHandler, JobContext } from '@psyqueue/core'
 import { VersionRegistry } from './registry.js'
 import { validatePayload } from './validator.js'
 import type { VersionedHandlerConfig, VersionConfig } from './registry.js'

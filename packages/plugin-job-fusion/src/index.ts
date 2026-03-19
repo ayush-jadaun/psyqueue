@@ -1,4 +1,4 @@
-import type { PsyPlugin, Kernel, Job } from 'psyqueue'
+import type { PsyPlugin, Kernel, Job } from '@psyqueue/core'
 import { BatchCollector } from './batcher.js'
 import type { FusionRule } from './batcher.js'
 

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { Registry } from 'prom-client'
 import { metrics } from '../src/index.js'
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { sqlite } from '../../backend-sqlite/src/index.js'
 
 function makeQueue(registry: Registry): PsyQueue {

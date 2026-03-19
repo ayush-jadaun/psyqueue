@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { PsyQueue, createJob } from 'psyqueue'
-import type { JobContext } from 'psyqueue'
+import { PsyQueue, createJob } from '@psyqueue/core'
+import type { JobContext } from '@psyqueue/core'
 import { sqlite } from '../../backend-sqlite/src/index.js'
 import { schemaVersioning } from '../src/index.js'
 import { z } from 'zod'

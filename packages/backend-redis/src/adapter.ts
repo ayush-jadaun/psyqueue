@@ -13,7 +13,7 @@ import type {
   AtomicOp,
   JobError,
   BackoffStrategy,
-} from 'psyqueue'
+} from '@psyqueue/core'
 
 export interface RedisAdapterOpts {
   host?: string

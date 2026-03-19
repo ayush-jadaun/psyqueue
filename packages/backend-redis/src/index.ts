@@ -1,4 +1,4 @@
-import type { PsyPlugin, Kernel } from 'psyqueue'
+import type { PsyPlugin, Kernel } from '@psyqueue/core'
 import { RedisBackendAdapter } from './adapter.js'
 import type { RedisAdapterOpts } from './adapter.js'
 

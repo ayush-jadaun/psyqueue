@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { Breaker } from '../src/breaker.js'
 import { circuitBreaker } from '../src/index.js'
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { sqlite } from '../../backend-sqlite/src/index.js'
 
 // ============================================================================

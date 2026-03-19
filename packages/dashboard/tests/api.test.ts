@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import type http from 'node:http'
-import type { BackendAdapter, Job, PaginatedResult, JobFilter, DequeuedJob, AckResult, NackOpts, AtomicOp } from 'psyqueue'
+import type { BackendAdapter, Job, PaginatedResult, JobFilter, DequeuedJob, AckResult, NackOpts, AtomicOp } from '@psyqueue/core'
 import { createDashboardServer } from '../src/server.js'
 
 // In-memory mock backend

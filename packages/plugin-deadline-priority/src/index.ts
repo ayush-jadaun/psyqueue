@@ -1,4 +1,4 @@
-import type { PsyPlugin, Kernel, Job } from 'psyqueue'
+import type { PsyPlugin, Kernel, Job } from '@psyqueue/core'
 import { linearCurve, exponentialCurve, stepCurve } from './curves.js'
 
 export { linearCurve, exponentialCurve, stepCurve } from './curves.js'

@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3'
-import type { BackendAdapter, Job } from 'psyqueue'
+import type { BackendAdapter, Job } from '@psyqueue/core'
 
 export interface SyncEngineOpts {
   localPath: string

@@ -9,5 +9,5 @@
   "devDependencies": {
     "vitest": "^3.0.0"
   },
-  "peerDependencies": { "psyqueue": "workspace:*", "@psyqueue/plugin-workflows": "workspace:*" }
+  "peerDependencies": { "@psyqueue/core": "workspace:*", "@psyqueue/plugin-workflows": "workspace:*" }
 }

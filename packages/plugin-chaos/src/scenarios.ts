@@ -1,4 +1,4 @@
-import type { Middleware } from 'psyqueue'
+import type { Middleware } from '@psyqueue/core'
 
 export interface ChaosScenarioConfig {
   probability: number

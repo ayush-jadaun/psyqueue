@@ -1,4 +1,4 @@
-import type { JobFilter } from 'psyqueue'
+import type { JobFilter } from '@psyqueue/core'
 
 export const INSERT_JOB = `
 INSERT INTO jobs (

@@ -1,4 +1,4 @@
-import type { PsyPlugin, Kernel, Job } from 'psyqueue'
+import type { PsyPlugin, Kernel, Job } from '@psyqueue/core'
 import { DelayedJobPoller } from './delayed.js'
 import { CronManager } from './cron.js'
 

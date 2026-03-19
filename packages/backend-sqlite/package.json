@@ -23,6 +23,6 @@
     "vitest": "^3.0.0"
   },
   "peerDependencies": {
-    "psyqueue": "workspace:*"
+    "@psyqueue/core": "workspace:*"
   }
 }

@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { sqlite } from '../../backend-sqlite/src/index.js'
 import { scheduler, computeNextRunAt } from '../src/index.js'
-import type { BackendAdapter } from 'psyqueue'
+import type { BackendAdapter } from '@psyqueue/core'
 
 // ------------------------------------------------------------------ //
 // Unit tests for computeNextRunAt (no I/O)                           //

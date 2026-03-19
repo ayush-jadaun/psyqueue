@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { sqlite } from '../../backend-sqlite/src/index.js'
 import { workflows, workflow } from '../../plugin-workflows/src/index.js'
 import type { WorkflowEngine } from '../../plugin-workflows/src/index.js'

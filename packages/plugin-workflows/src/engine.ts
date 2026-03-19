@@ -1,5 +1,5 @@
-import type { Kernel, BackendAdapter, Job, JobHandler, JobContext } from 'psyqueue'
-import { generateId, createJob } from 'psyqueue'
+import type { Kernel, BackendAdapter, Job, JobHandler, JobContext } from '@psyqueue/core'
+import { generateId, createJob } from '@psyqueue/core'
 import type { WorkflowDefinition, StepDefinition } from './builder.js'
 import { WorkflowStore } from './state.js'
 import type { WorkflowInstance, StepState } from './state.js'

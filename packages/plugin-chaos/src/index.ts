@@ -1,4 +1,4 @@
-import type { PsyPlugin, Kernel, Middleware } from 'psyqueue'
+import type { PsyPlugin, Kernel, Middleware } from '@psyqueue/core'
 import {
   slowProcess,
   workerCrash,

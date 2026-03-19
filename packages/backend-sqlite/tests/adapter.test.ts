@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { SQLiteBackendAdapter } from '../src/adapter.js'
-import type { Job, DequeuedJob, JobStatus } from 'psyqueue'
+import type { Job, DequeuedJob, JobStatus } from '@psyqueue/core'
 
 function makeJob(overrides: Partial<Job> = {}): Job {
   const id = `job_${Math.random().toString(36).slice(2, 10)}`

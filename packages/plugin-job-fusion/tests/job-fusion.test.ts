@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { BatchCollector } from '../src/batcher.js'
 import { jobFusion } from '../src/index.js'
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { sqlite } from '../../backend-sqlite/src/index.js'
-import type { Job } from 'psyqueue'
+import type { Job } from '@psyqueue/core'
 
 // ============================================================================
 // Helper: create a minimal mock job

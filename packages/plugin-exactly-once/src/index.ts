@@ -1,5 +1,5 @@
-import type { PsyPlugin, Kernel } from 'psyqueue'
-import { DuplicateJobError } from 'psyqueue'
+import type { PsyPlugin, Kernel } from '@psyqueue/core'
+import { DuplicateJobError } from '@psyqueue/core'
 import { DedupStore } from './dedup.js'
 
 export type { DedupStore }

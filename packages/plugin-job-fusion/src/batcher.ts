@@ -1,4 +1,4 @@
-import type { Job } from 'psyqueue'
+import type { Job } from '@psyqueue/core'
 
 export interface FusionRule {
   match: string

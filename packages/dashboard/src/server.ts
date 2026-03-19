@@ -2,7 +2,7 @@ import express, { type Request, type Response, type NextFunction } from 'express
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import fs from 'node:fs'
-import type { BackendAdapter, JobFilter, JobStatus } from 'psyqueue'
+import type { BackendAdapter, JobFilter, JobStatus } from '@psyqueue/core'
 import type http from 'node:http'
 
 export interface DashboardServerOpts {

@@ -1,5 +1,5 @@
-import type { PsyPlugin, Kernel } from 'psyqueue'
-import { RateLimitError } from 'psyqueue'
+import type { PsyPlugin, Kernel } from '@psyqueue/core'
+import { RateLimitError } from '@psyqueue/core'
 import { TierManager, type TierConfig } from './tiers.js'
 import { SlidingWindowRateLimiter } from './rate-limiter.js'
 import { FairScheduler, type SchedulingMode } from './fair-scheduler.js'

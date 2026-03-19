@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { FairScheduler } from '../src/fair-scheduler.js'
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { sqlite } from '../../backend-sqlite/src/index.js'
 import { tenancy } from '../src/index.js'
 

@@ -1,4 +1,4 @@
-import type { JobHandler } from 'psyqueue'
+import type { JobHandler } from '@psyqueue/core'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

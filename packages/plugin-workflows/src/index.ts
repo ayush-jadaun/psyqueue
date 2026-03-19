@@ -1,4 +1,4 @@
-import type { PsyPlugin, Kernel, PsyEvent } from 'psyqueue'
+import type { PsyPlugin, Kernel, PsyEvent } from '@psyqueue/core'
 import { WorkflowEngine } from './engine.js'
 
 export { workflow, WorkflowBuilder } from './builder.js'

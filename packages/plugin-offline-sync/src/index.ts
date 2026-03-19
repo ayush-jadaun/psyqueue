@@ -1,4 +1,4 @@
-import type { PsyPlugin, Kernel } from 'psyqueue'
+import type { PsyPlugin, Kernel } from '@psyqueue/core'
 import { SyncEngine } from './sync-engine.js'
 
 export { SyncEngine } from './sync-engine.js'

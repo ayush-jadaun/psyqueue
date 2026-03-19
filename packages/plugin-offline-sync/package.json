@@ -13,5 +13,5 @@
     "@types/better-sqlite3": "^7.6.12",
     "vitest": "^3.0.0"
   },
-  "peerDependencies": { "psyqueue": "workspace:*" }
+  "peerDependencies": { "@psyqueue/core": "workspace:*" }
 }

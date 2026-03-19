@@ -1,4 +1,4 @@
-import type { PsyPlugin, Kernel } from 'psyqueue'
+import type { PsyPlugin, Kernel } from '@psyqueue/core'
 import { PostgresBackendAdapter } from './adapter.js'
 import type { PostgresAdapterOpts } from './adapter.js'
 

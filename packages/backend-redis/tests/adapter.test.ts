@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, beforeAll } from 'vitest'
 import Redis from 'ioredis'
 import { RedisBackendAdapter, serializeJobToHash, deserializeJobFromHash, computePendingScore } from '../src/adapter.js'
-import type { Job, JobStatus } from 'psyqueue'
+import type { Job, JobStatus } from '@psyqueue/core'
 
 // ─── Availability check ───────────────────────────────────────────────────────
 

@@ -1,4 +1,4 @@
-import type { PsyPlugin, Kernel } from 'psyqueue'
+import type { PsyPlugin, Kernel } from '@psyqueue/core'
 import { HttpWorkerServer } from './server.js'
 
 export { HttpWorkerServer } from './server.js'

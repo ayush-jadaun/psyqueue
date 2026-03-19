@@ -11,7 +11,7 @@ import type {
   AtomicOp,
   JobError,
   BackoffStrategy,
-} from 'psyqueue'
+} from '@psyqueue/core'
 import { SCHEMA_SQL } from './schema.js'
 import {
   INSERT_JOB,

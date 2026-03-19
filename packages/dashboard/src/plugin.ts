@@ -1,4 +1,4 @@
-import type { PsyPlugin, Kernel, BackendAdapter } from 'psyqueue'
+import type { PsyPlugin, Kernel, BackendAdapter } from '@psyqueue/core'
 import { createDashboardServer } from './server.js'
 
 export interface DashboardOpts {

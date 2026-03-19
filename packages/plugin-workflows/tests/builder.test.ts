@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { workflow } from '../src/builder.js'
-import type { JobContext } from 'psyqueue'
+import type { JobContext } from '@psyqueue/core'
 
 const h = async (_ctx: JobContext) => 'ok'
 

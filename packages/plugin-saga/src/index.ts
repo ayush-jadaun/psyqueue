@@ -1,4 +1,4 @@
-import type { PsyPlugin, Kernel, PsyEvent } from 'psyqueue'
+import type { PsyPlugin, Kernel, PsyEvent } from '@psyqueue/core'
 import type { WorkflowEngine } from '@psyqueue/plugin-workflows'
 import { Compensator } from './compensator.js'
 

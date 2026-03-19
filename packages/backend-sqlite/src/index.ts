@@ -1,4 +1,4 @@
-import type { PsyPlugin, Kernel } from 'psyqueue'
+import type { PsyPlugin, Kernel } from '@psyqueue/core'
 import { SQLiteBackendAdapter } from './adapter.js'
 
 export interface SQLiteOpts {
