@@ -12,7 +12,7 @@
  * Run: npx tsx examples/11-audit-log/index.ts
  */
 
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { sqlite } from '@psyqueue/backend-sqlite'
 import { auditLog } from '@psyqueue/plugin-audit-log'
 

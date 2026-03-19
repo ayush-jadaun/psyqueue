@@ -6,7 +6,7 @@
  *   - Fair scheduling across tenants
  *   - Tier configuration (free vs pro vs enterprise)
  */
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { sqlite } from '@psyqueue/backend-sqlite'
 import { tenancy } from '@psyqueue/plugin-tenancy'
 

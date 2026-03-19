@@ -8,9 +8,9 @@
  * Requires Redis on localhost:6381
  */
 
-import { PsyQueue, QueueEvents } from '../../packages/core/src/index.js'
-import { redis } from '../../packages/backend-redis/src/index.js'
-import { createDashboardServer } from '../../packages/dashboard/src/server.js'
+import { PsyQueue, QueueEvents } from '@psyqueue/core'
+import { redis } from '@psyqueue/backend-redis'
+import { createDashboardServer } from '@psyqueue/dashboard'
 
 async function main() {
   const q = new PsyQueue()

@@ -11,7 +11,7 @@
  * Run: npx tsx examples/09-exactly-once/index.ts
  */
 
-import { PsyQueue, DuplicateJobError } from 'psyqueue'
+import { PsyQueue, DuplicateJobError } from '@psyqueue/core'
 import { sqlite } from '@psyqueue/backend-sqlite'
 import { exactlyOnce } from '@psyqueue/plugin-exactly-once'
 

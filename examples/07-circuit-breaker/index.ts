@@ -11,7 +11,7 @@
  * Run: npx tsx examples/07-circuit-breaker/index.ts
  */
 
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { sqlite } from '@psyqueue/backend-sqlite'
 import { circuitBreaker } from '@psyqueue/plugin-circuit-breaker'
 

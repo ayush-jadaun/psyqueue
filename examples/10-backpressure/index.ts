@@ -12,7 +12,7 @@
  * Run: npx tsx examples/10-backpressure/index.ts
  */
 
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { sqlite } from '@psyqueue/backend-sqlite'
 import { backpressure } from '@psyqueue/plugin-backpressure'
 

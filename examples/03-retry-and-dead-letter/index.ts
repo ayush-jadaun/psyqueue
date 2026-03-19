@@ -11,7 +11,7 @@
  * Run: npx tsx examples/03-retry-and-dead-letter/index.ts
  */
 
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { sqlite } from '@psyqueue/backend-sqlite'
 
 // Track call counts to simulate transient failures.

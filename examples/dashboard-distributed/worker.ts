@@ -5,8 +5,8 @@
  * Tags every job result with this worker's PID to prove distribution.
  */
 
-import { PsyQueue } from '../../packages/core/src/index.js'
-import { redis } from '../../packages/backend-redis/src/index.js'
+import { PsyQueue } from '@psyqueue/core' // use relative '../../packages/core/src/index.js' for monorepo dev
+import { redis } from '@psyqueue/backend-redis'
 import { createHash } from 'crypto'
 import { writeFileSync, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'

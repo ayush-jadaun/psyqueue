@@ -13,10 +13,10 @@
  * Run: npx tsx examples/12-job-fusion/index.ts
  */
 
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { sqlite } from '@psyqueue/backend-sqlite'
 import { jobFusion } from '@psyqueue/plugin-job-fusion'
-import type { Job } from 'psyqueue'
+import type { Job } from '@psyqueue/core'
 
 async function main() {
   console.log('=== Job Fusion (Auto-Batching) ===\n')

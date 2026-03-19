@@ -12,7 +12,7 @@
  * Run: npx tsx examples/13-deadline-priority/index.ts
  */
 
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { sqlite } from '@psyqueue/backend-sqlite'
 import { deadlinePriority } from '@psyqueue/plugin-deadline-priority'
 

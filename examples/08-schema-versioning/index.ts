@@ -15,7 +15,7 @@
  * Run: npx tsx examples/08-schema-versioning/index.ts
  */
 
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { sqlite } from '@psyqueue/backend-sqlite'
 import { schemaVersioning } from '@psyqueue/plugin-schema-versioning'
 import { z } from 'zod'

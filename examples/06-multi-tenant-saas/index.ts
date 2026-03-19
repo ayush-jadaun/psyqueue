@@ -12,7 +12,7 @@
  * Run: npx tsx examples/06-multi-tenant-saas/index.ts
  */
 
-import { PsyQueue, RateLimitError } from 'psyqueue'
+import { PsyQueue, RateLimitError } from '@psyqueue/core'
 import { sqlite } from '@psyqueue/backend-sqlite'
 import { tenancy } from '@psyqueue/plugin-tenancy'
 

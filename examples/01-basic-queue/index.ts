@@ -12,7 +12,7 @@
  * Run: npx tsx examples/01-basic-queue/index.ts
  */
 
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { sqlite } from '@psyqueue/backend-sqlite'
 
 async function main() {

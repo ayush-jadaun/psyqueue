@@ -10,7 +10,7 @@
  * Run: npx tsx examples/02-delayed-and-cron/index.ts
  */
 
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { sqlite } from '@psyqueue/backend-sqlite'
 import { scheduler } from '@psyqueue/plugin-scheduler'
 

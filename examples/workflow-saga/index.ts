@@ -6,7 +6,7 @@
  *   - Saga compensation: if a step fails, previously completed steps
  *     are automatically compensated in reverse order.
  */
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { sqlite } from '@psyqueue/backend-sqlite'
 import { workflows, workflow } from '@psyqueue/plugin-workflows'
 import { saga } from '@psyqueue/plugin-saga'

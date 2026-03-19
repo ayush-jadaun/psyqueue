@@ -9,9 +9,9 @@
  * Then open: http://localhost:4000/events
  */
 
-import { PsyQueue, QueueEvents } from '../../packages/core/src/index.js'
-import { redis } from '../../packages/backend-redis/src/index.js'
-import { createDashboardServer } from '../../packages/dashboard/src/server.js'
+import { PsyQueue, QueueEvents } from '@psyqueue/core' // use relative '../../packages/core/src/index.js' for monorepo dev
+import { redis } from '@psyqueue/backend-redis'
+import { createDashboardServer } from '@psyqueue/dashboard'
 import { spawn } from 'child_process'
 import { join } from 'path'
 async function main() {

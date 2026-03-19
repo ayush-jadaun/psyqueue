@@ -13,7 +13,7 @@
  * Run: npx tsx examples/15-chaos-testing/index.ts
  */
 
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { sqlite } from '@psyqueue/backend-sqlite'
 import { chaosMode } from '@psyqueue/plugin-chaos'
 import { exactlyOnce } from '@psyqueue/plugin-exactly-once'

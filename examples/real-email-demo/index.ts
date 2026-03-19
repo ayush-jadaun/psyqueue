@@ -8,8 +8,8 @@
  */
 
 import nodemailer from 'nodemailer'
-import { PsyQueue } from '../../packages/core/src/index.js'
-import { sqlite } from '../../packages/backend-sqlite/src/index.js'
+import { PsyQueue } from '@psyqueue/core'
+import { sqlite } from '@psyqueue/backend-sqlite'
 import { createDashboardServer } from '../../packages/dashboard/src/server.js'
 
 async function main() {

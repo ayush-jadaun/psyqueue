@@ -7,7 +7,7 @@
  *   - Defining a job handler
  *   - Enqueueing and processing jobs
  */
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { sqlite } from '@psyqueue/backend-sqlite'
 
 async function main() {

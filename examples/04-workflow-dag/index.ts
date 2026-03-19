@@ -20,7 +20,7 @@
  * Run: npx tsx examples/04-workflow-dag/index.ts
  */
 
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { sqlite } from '@psyqueue/backend-sqlite'
 import { workflows, workflow } from '@psyqueue/plugin-workflows'
 

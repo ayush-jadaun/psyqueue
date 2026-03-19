@@ -26,7 +26,7 @@
  * Run: npx tsx examples/14-http-workers/index.ts
  */
 
-import { PsyQueue } from 'psyqueue'
+import { PsyQueue } from '@psyqueue/core'
 import { sqlite } from '@psyqueue/backend-sqlite'
 import { httpWorkers } from '@psyqueue/plugin-http-workers'
 

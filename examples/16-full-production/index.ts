@@ -20,7 +20,7 @@
  * Run: npx tsx examples/16-full-production/index.ts
  */
 
-import { PsyQueue, RateLimitError } from 'psyqueue'
+import { PsyQueue, RateLimitError } from '@psyqueue/core'
 import { sqlite } from '@psyqueue/backend-sqlite'
 import { scheduler } from '@psyqueue/plugin-scheduler'
 import { crashRecovery } from '@psyqueue/plugin-crash-recovery'
@@ -36,7 +36,7 @@ import { metrics } from '@psyqueue/plugin-metrics'
 import { deadlinePriority } from '@psyqueue/plugin-deadline-priority'
 import { jobFusion } from '@psyqueue/plugin-job-fusion'
 import { z } from 'zod'
-import type { Job } from 'psyqueue'
+import type { Job } from '@psyqueue/core'
 
 // ── Tenant tier registry ───────────────────────────────────────────────────
 
