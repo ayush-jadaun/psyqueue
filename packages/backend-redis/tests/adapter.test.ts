@@ -190,8 +190,8 @@ describe('RedisBackendAdapter – key naming (always runs)', () => {
     expect(a['jobKey']!('abc')).toBe('test:job:abc')
     expect(a['pendingKey']!('myqueue')).toBe('test:myqueue:pending')
     expect(a['activeKey']!('myqueue')).toBe('test:myqueue:active')
-    expect(a['completedKey']!('myqueue')).toBe('test:myqueue:completed')
-    expect(a['deadKey']!('myqueue')).toBe('test:myqueue:dead')
+    // completedKey and deadKey patterns now computed inside Lua scripts using prefix + queue
+    expect(a['keyPrefix']!()).toBe('test:')  // used by Lua for dynamic key construction
     expect(a['scheduledKey']!('')).toBe('test:scheduled')
     expect(a['lockKey']!('my-lock')).toBe('test:lock:my-lock')
   })

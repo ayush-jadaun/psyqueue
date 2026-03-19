@@ -1,0 +1,24 @@
+{
+  "name": "@psyqueue/benchmarks",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "bench": "tsx run.ts",
+    "bench:throughput": "tsx throughput.ts",
+    "bench:latency": "tsx latency.ts",
+    "bench:comparison": "tsx comparison.ts",
+    "bench:workflow": "tsx workflow.ts"
+  },
+  "dependencies": {
+    "psyqueue": "workspace:*",
+    "@psyqueue/backend-sqlite": "workspace:*",
+    "@psyqueue/backend-redis": "workspace:*",
+    "@psyqueue/plugin-workflows": "workspace:*",
+    "@psyqueue/plugin-saga": "workspace:*",
+    "tsx": "^4.0.0"
+  },
+  "optionalDependencies": {
+    "bullmq": "^5.0.0",
+    "pg-boss": "^10.0.0"
+  }
+}

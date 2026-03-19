@@ -135,14 +135,18 @@ if #ids == 0 then
 end
 
 local results = {}
+local time = redis.call('TIME')
 for _, id in ipairs(ids) do
-  local token = id .. ':' .. redis.call('TIME')[1] .. redis.call('TIME')[2]
+  local token = id .. ':' .. time[1] .. time[2]
   redis.call('ZREM', pending_key, id)
-  redis.call('ZADD', active_key, redis.call('TIME')[1], id)
+  redis.call('ZADD', active_key, time[1], id)
   local hash_key = hash_prefix .. id
   redis.call('HSET', hash_key, 'status', 'active', 'started_at', started_at, 'completion_token', token)
+  -- Return full job data inline (avoids extra HGETALL round-trip)
+  local data = redis.call('HGETALL', hash_key)
   table.insert(results, id)
   table.insert(results, token)
+  table.insert(results, cjson.encode(data))
 end
 return results
 `
@@ -154,23 +158,75 @@ return results
 // ARGV[1] = completion token (or '' to skip check)
 // ARGV[2] = completed_at ISO string
 // Returns: 0 = already completed (token mismatch), 1 = success
+// Single-call ack script: reads queue from hash, verifies token, moves to completed
+// KEYS[1] = hash key, KEYS[2] = key prefix (e.g. 'psyqueue:')
+// ARGV[1] = token, ARGV[2] = completed_at, ARGV[3] = jobId
 export const ACK_SCRIPT = `
-local active_key = KEYS[1]
-local completed_key = KEYS[2]
-local hash_key = KEYS[3]
+local hash_key = KEYS[1]
+local prefix = KEYS[2]
 local token = ARGV[1]
 local completed_at = ARGV[2]
+local job_id = ARGV[3]
 
 local current_token = redis.call('HGET', hash_key, 'completion_token')
 if token ~= '' and current_token ~= token then
   return 0
 end
 
-redis.call('ZREM', active_key, redis.call('HGET', hash_key, 'id'))
-local job_id = redis.call('HGET', hash_key, 'id')
-redis.call('ZREM', active_key, job_id)
-redis.call('ZADD', completed_key, redis.call('TIME')[1], job_id)
+local queue = redis.call('HGET', hash_key, 'queue')
+if not queue then return 0 end
+
+redis.call('ZREM', prefix .. queue .. ':active', job_id)
+redis.call('ZADD', prefix .. queue .. ':completed', redis.call('TIME')[1], job_id)
 redis.call('HSET', hash_key, 'status', 'completed', 'completed_at', completed_at)
+return 1
+`
+
+// Single Lua script for nack — handles requeue, dead-letter, fail in one call
+// KEYS[1] = hash key, KEYS[2] = key prefix
+// ARGV[1] = jobId, ARGV[2] = mode (requeue|dead|fail), ARGV[3] = error json
+// ARGV[4] = delay ms, ARGV[5] = now ms
+export const NACK_SCRIPT = `
+local hash_key = KEYS[1]
+local prefix = KEYS[2]
+local job_id = ARGV[1]
+local mode = ARGV[2]
+local error_json = ARGV[3]
+local delay_ms = tonumber(ARGV[4])
+local now_ms = tonumber(ARGV[5])
+
+local queue = redis.call('HGET', hash_key, 'queue')
+if not queue then return 0 end
+
+redis.call('ZREM', prefix .. queue .. ':active', job_id)
+
+if mode == 'dead' then
+  redis.call('HSET', hash_key, 'status', 'dead', 'error', error_json)
+  redis.call('ZADD', prefix .. queue .. ':dead', now_ms, job_id)
+  return 1
+end
+
+if mode == 'fail' then
+  redis.call('HSET', hash_key, 'status', 'failed', 'error', error_json)
+  return 1
+end
+
+-- requeue
+local attempt = tonumber(redis.call('HGET', hash_key, 'attempt') or '1')
+local new_attempt = attempt + 1
+local priority = tonumber(redis.call('HGET', hash_key, 'priority') or '0')
+
+local score
+local run_at = ''
+if delay_ms > 0 then
+  score = now_ms + delay_ms
+  run_at = tostring(score)
+else
+  score = -priority * 10000000000000 + now_ms
+end
+
+redis.call('HSET', hash_key, 'status', 'pending', 'attempt', tostring(new_attempt), 'run_at', run_at)
+redis.call('ZADD', prefix .. queue .. ':pending', score, job_id)
 return 1
 `
 
@@ -219,6 +275,10 @@ export class RedisBackendAdapter implements BackendAdapter {
     this.prefix = opts.keyPrefix ?? 'psyqueue'
   }
 
+  private keyPrefix(): string {
+    return `${this.prefix}:`
+  }
+
   private jobKey(id: string): string {
     return `${this.prefix}:job:${id}`
   }
@@ -229,14 +289,6 @@ export class RedisBackendAdapter implements BackendAdapter {
 
   private activeKey(queue: string): string {
     return `${this.prefix}:${queue}:active`
-  }
-
-  private completedKey(queue: string): string {
-    return `${this.prefix}:${queue}:completed`
-  }
-
-  private deadKey(queue: string): string {
-    return `${this.prefix}:${queue}:dead`
   }
 
   private scheduledKey(): string {
@@ -338,13 +390,19 @@ export class RedisBackendAdapter implements BackendAdapter {
     if (!results || results.length === 0) return []
 
     const dequeued: DequeuedJob[] = []
-    for (let i = 0; i < results.length; i += 2) {
+    // Results come in triplets: [id, token, jsonEncodedHashData, id, token, ...]
+    for (let i = 0; i < results.length; i += 3) {
       const id = results[i]
       const token = results[i + 1]
-      if (!id || !token) continue
+      const rawData = results[i + 2]
+      if (!id || !token || !rawData) continue
 
-      const hashData = await client.hgetall(this.jobKey(id))
-      if (!hashData || Object.keys(hashData).length === 0) continue
+      // Parse the HGETALL result returned inline from Lua (array of key,value pairs)
+      const dataArray: string[] = JSON.parse(rawData)
+      const hashData: Record<string, string> = {}
+      for (let j = 0; j < dataArray.length; j += 2) {
+        hashData[dataArray[j]!] = dataArray[j + 1]!
+      }
 
       const job = deserializeJobFromHash(hashData)
       dequeued.push({ ...job, completionToken: token })
@@ -357,18 +415,15 @@ export class RedisBackendAdapter implements BackendAdapter {
     const client = this.getClient()
     const completedAt = new Date().toISOString()
 
-    // We need the queue to find the active/completed keys
-    const queue = await client.hget(this.jobKey(jobId), 'queue')
-    if (!queue) return { alreadyCompleted: true }
-
+    // Single Lua call — reads queue from hash, no extra round-trip
     const result = await client.eval(
       ACK_SCRIPT,
-      3,
-      this.activeKey(queue),
-      this.completedKey(queue),
+      2,
       this.jobKey(jobId),
+      this.keyPrefix(),
       completionToken ?? '',
       completedAt,
+      jobId,
     ) as number
 
     return { alreadyCompleted: result === 0 }
@@ -377,49 +432,22 @@ export class RedisBackendAdapter implements BackendAdapter {
   async nack(jobId: string, opts?: NackOpts): Promise<void> {
     const client = this.getClient()
 
-    const queue = await client.hget(this.jobKey(jobId), 'queue')
-    if (!queue) return
+    // Single Lua call handles all nack variants: requeue, dead-letter, or fail
+    const mode = opts?.deadLetter ? 'dead' : (opts?.requeue === false ? 'fail' : 'requeue')
+    const error = opts?.reason ? JSON.stringify({ message: opts.reason, retryable: false }) : ''
+    const delay = opts?.delay ?? 0
 
-    // Remove from active set
-    await client.zrem(this.activeKey(queue), jobId)
-
-    if (opts?.deadLetter) {
-      const error = opts.reason ? JSON.stringify({ message: opts.reason, retryable: false }) : ''
-      const pipeline = client.pipeline()
-      pipeline.hset(this.jobKey(jobId), 'status', 'dead', 'error', error)
-      pipeline.zadd(this.deadKey(queue), Date.now(), jobId)
-      await pipeline.exec()
-      return
-    }
-
-    if (opts?.requeue === false) {
-      const error = opts.reason ? JSON.stringify({ message: opts.reason, retryable: false }) : ''
-      await client.hset(this.jobKey(jobId), 'status', 'failed', 'error', error)
-      return
-    }
-
-    // Default: requeue
-    const currentAttemptStr = await client.hget(this.jobKey(jobId), 'attempt')
-    const currentAttempt = parseInt(currentAttemptStr ?? '1', 10)
-    const newAttempt = currentAttempt + 1
-
-    let runAt = ''
-    let score: number
-    if (opts?.delay) {
-      const runAtDate = new Date(Date.now() + opts.delay)
-      runAt = runAtDate.toISOString()
-      score = computePendingScore(0, runAtDate)
-    } else {
-      score = computePendingScore(
-        parseInt(await client.hget(this.jobKey(jobId), 'priority') ?? '0', 10),
-        new Date(),
-      )
-    }
-
-    const pipeline = client.pipeline()
-    pipeline.hset(this.jobKey(jobId), 'status', 'pending', 'attempt', String(newAttempt), 'run_at', runAt)
-    pipeline.zadd(this.pendingKey(queue), score, jobId)
-    await pipeline.exec()
+    await client.eval(
+      NACK_SCRIPT,
+      2,
+      this.jobKey(jobId),
+      this.keyPrefix(),
+      jobId,
+      mode,
+      error,
+      String(delay),
+      String(Date.now()),
+    )
   }
 
   async getJob(jobId: string): Promise<Job | null> {
