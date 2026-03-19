@@ -27,10 +27,10 @@ interface WorkerInternals {
  * Single-loop semaphore worker architecture.
  *
  * ONE dequeue loop with a semaphore controlling concurrency.
- * - 1 blocking connection (BZPOPMIN) + 1 command connection = 2 Redis connections total
+ * - 1 blocking connection (BRPOPLPUSH) + 1 command connection = 2 Redis connections total
  * - Semaphore limits parallelism (concurrency:10 = up to 10 handlers running)
  * - Non-blocking batch grab with local buffer reduces Redis round-trips
- * - BZPOPMIN only used when queue is empty (efficient blocking wait)
+ * - BRPOPLPUSH only used when queue is empty (efficient blocking wait)
  * - Non-blocking dispatch: loop doesn't wait for handlers, keeps pulling
  */
 export class WorkerPool {
@@ -136,8 +136,8 @@ export class WorkerPool {
    * Strategy for blocking backends:
    * 1. Dispatch any buffered jobs first (no Redis call needed)
    * 2. If buffer empty, try non-blocking batch grab (fast path)
-   * 3. If queue empty, fall back to BZPOPMIN (blocking wait)
-   * 4. After BZPOPMIN unblocks, batch-grab more to fill buffer
+   * 3. If queue empty, fall back to BRPOPLPUSH (blocking wait)
+   * 4. After BRPOPLPUSH unblocks, batch-grab more to fill buffer
    *
    * Strategy for polling backends:
    * - Standard poll with sleep when queue is empty
@@ -175,7 +175,7 @@ export class WorkerPool {
             }
             queueWasEmpty = false
           } else {
-            // BLOCKING PATH: queue was empty, wait with BZPOPMIN
+            // BLOCKING PATH: queue was empty, wait with BRPOPLPUSH
             jobs = await this.backend.blockingDequeue(this.queue, this.opts.blockTimeout ?? 5000)
 
             if (jobs.length === 0) continue // timeout

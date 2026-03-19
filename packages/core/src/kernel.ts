@@ -412,7 +412,7 @@ export class PsyQueue {
   /**
    * Start a worker pool for the given queue. Jobs are automatically dequeued
    * and processed using registered handlers.
-   * Uses blocking reads (BZPOPMIN) for Redis, polling for other backends.
+   * Uses blocking reads (BRPOPLPUSH) for Redis, polling for other backends.
    */
   startWorker(queue: string, opts: WorkerOpts = {}): void {
     if (this.workers.has(queue)) {

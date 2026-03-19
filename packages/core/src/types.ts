@@ -148,7 +148,7 @@ export interface BackendAdapter {
 
   /**
    * Block until a job is available or timeout expires.
-   * Returns empty array on timeout. Uses BZPOPMIN (Redis) or LISTEN/NOTIFY (Postgres).
+   * Returns empty array on timeout. Uses BRPOPLPUSH (Redis) or LISTEN/NOTIFY (Postgres).
    * IMPORTANT: This blocks the connection — caller must use a dedicated connection.
    */
   blockingDequeue?(queue: string, timeoutMs: number): Promise<DequeuedJob[]>
@@ -268,7 +268,7 @@ export interface WorkerOpts {
   concurrency?: number
   /** Milliseconds to wait in blocking dequeue before retrying (default: 5000) */
   blockTimeout?: number
-  /** Max jobs to grab per cycle after unblock (default: 1) */
+  /** Max jobs to grab per cycle (default: max(concurrency * 2, 10)) */
   batchSize?: number
   /** Milliseconds between polls for non-blocking backends (default: 50) */
   pollInterval?: number

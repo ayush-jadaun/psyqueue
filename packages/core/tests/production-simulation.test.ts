@@ -600,7 +600,7 @@ describe('Production Simulation', () => {
       resolveTier: async (tenantId: string) => {
         return tenantId.startsWith('free-') ? 'free' : 'pro'
       },
-      scheduling: 'weighted-round-robin',
+      scheduling: 'weighted-fair-queue',
     }))
 
     q.handle('work', async (ctx) => {

@@ -18,4 +18,4 @@ export function redis(opts: RedisAdapterOpts = {}): PsyPlugin {
   }
 }
 
-export { RedisBackendAdapter } from './adapter.js'
+export { RedisBackendAdapter, serializeJobToHash, deserializeJobFromHash } from './adapter.js'

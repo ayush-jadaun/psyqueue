@@ -84,28 +84,22 @@ async function main() {
     tiers: {
       free: {
         weight: 1,
-        rateLimit: { max: 10, window: 60_000 },
-        maxConcurrency: 2,
-        maxJobsPerMinute: 10,
-        features: ['basic'],
+        rateLimit: { max: 10, window: '1m' },
+        concurrency: 2,
       },
       pro: {
         weight: 5,
-        rateLimit: { max: 100, window: 60_000 },
-        maxConcurrency: 20,
-        maxJobsPerMinute: 100,
-        features: ['basic', 'priority', 'webhooks'],
+        rateLimit: { max: 100, window: '1m' },
+        concurrency: 20,
       },
       enterprise: {
         weight: 20,
-        rateLimit: { max: 1000, window: 60_000 },
-        maxConcurrency: 100,
-        maxJobsPerMinute: 1000,
-        features: ['basic', 'priority', 'webhooks', 'dedicated', 'sla'],
+        rateLimit: { max: 1000, window: '1m' },
+        concurrency: 100,
       },
     },
     resolveTier: async (tenantId) => tenantTiers[tenantId] ?? 'free',
-    scheduling: 'weighted-round-robin',
+    scheduling: 'weighted-fair-queue',
   }))
 
   // ── 5. Workflows + Saga ───────────────────────────────────────────────────

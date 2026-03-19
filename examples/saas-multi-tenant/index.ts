@@ -50,7 +50,7 @@ async function main() {
     resolveTier: async (tenantId: string) => {
       return tenantTiers[tenantId] ?? 'free'
     },
-    scheduling: 'weighted-round-robin',
+    scheduling: 'weighted-fair-queue',
   }))
 
   // 3. Register a handler

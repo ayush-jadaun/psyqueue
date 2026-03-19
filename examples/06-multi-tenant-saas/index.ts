@@ -4,7 +4,7 @@
  * Demonstrates:
  *   - Three-tier tenancy: free / pro / enterprise with different rate limits
  *   - Per-tenant rate limiting via sliding window
- *   - Fair weighted-round-robin scheduling across tenants
+ *   - Fair weighted-fair-queue scheduling across tenants
  *   - Overriding a tenant's tier at runtime
  *   - What happens when a tenant exceeds their rate limit (RateLimitError)
  *   - tenancy:rate-limited event
@@ -61,7 +61,7 @@ async function main() {
     resolveTier: async (tenantId: string) => {
       return tenantTierMap[tenantId] ?? 'free'
     },
-    scheduling: 'weighted-round-robin',
+    scheduling: 'weighted-fair-queue',
   }))
 
   // ── Handlers ─────────────────────────────────────────────────────────────
