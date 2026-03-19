@@ -88,7 +88,7 @@ function buildCompensationContext(
   workflowId: string,
   stepName: string,
   results: Record<string, unknown>,
-  events: EventBusInterface,
+  _events: EventBusInterface,
 ): import('psyqueue').JobContext {
   const log: import('psyqueue').Logger = {
     debug: () => {},
