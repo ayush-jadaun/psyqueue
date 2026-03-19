@@ -1,7 +1,6 @@
 import type { PsyPlugin, Kernel } from 'psyqueue'
 import { SignalMonitor } from './signals.js'
 import { resolveActions } from './actions.js'
-import type { ActionFn } from './actions.js'
 import type { PressureState } from './signals.js'
 
 export type { PressureState } from './signals.js'

@@ -10,7 +10,6 @@ export interface JobFusionOpts {
 }
 
 export function jobFusion(opts: JobFusionOpts): PsyPlugin {
-  let kernelRef: Kernel | null = null
   let collector: BatchCollector | null = null
 
   const plugin: PsyPlugin = {
@@ -19,8 +18,6 @@ export function jobFusion(opts: JobFusionOpts): PsyPlugin {
     provides: 'job-fusion',
 
     init(k: Kernel): void {
-      kernelRef = k
-
       collector = new BatchCollector((rule, groupKey, jobs) => {
         // Called when a batch is ready to flush
         const fusedPayload = rule.fuse(jobs)
