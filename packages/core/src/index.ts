@@ -1,2 +1,3 @@
-// PsyQueue core entry point
-export const VERSION = '0.1.0';
+export * from './types.js'
+export * from './errors.js'
+export { EventBus } from './event-bus.js'
