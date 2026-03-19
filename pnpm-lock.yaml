@@ -35,6 +35,9 @@ importers:
       '@psyqueue/backend-sqlite':
         specifier: workspace:*
         version: link:../packages/backend-sqlite
+      '@psyqueue/dashboard':
+        specifier: workspace:*
+        version: link:../packages/dashboard
       '@psyqueue/plugin-audit-log':
         specifier: workspace:*
         version: link:../packages/plugin-audit-log
