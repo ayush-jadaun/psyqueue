@@ -88,7 +88,12 @@ async function benchmarkPsyQueueRedis(count: number): Promise<ComparisonEntry> {
     const memBefore = getMemoryMb()
     const q = new PsyQueue()
     q.use(redis({ url: 'redis://127.0.0.1:6381' }))
-    q.handle('bench', async () => ({ ok: true }))
+
+    let processed = 0
+    q.handle('bench', async () => {
+      processed++
+      return { ok: true }
+    })
 
     try {
       await q.start()
@@ -100,31 +105,71 @@ async function benchmarkPsyQueueRedis(count: number): Promise<ComparisonEntry> {
       }
     }
 
-    // Enqueue
+    // Enqueue all jobs first
     const enqueueStart = performance.now()
     for (let i = 0; i < count; i++) {
       await q.enqueue('bench', { i })
     }
     const enqueueMs = performance.now() - enqueueStart
 
-    // Process
+    // Process via blocking worker
+    processed = 0
     const processStart = performance.now()
-    for (let i = 0; i < count; i++) {
-      await q.processNext('bench')
+    q.startWorker('bench', { concurrency: 1 })
+
+    // Wait until all processed
+    while (processed < count) {
+      await new Promise(r => setTimeout(r, 10))
     }
     const processMs = performance.now() - processStart
 
-    // E2E latency
+    await q.stop()
+
+    // E2E latency (enqueue + worker pickup)
+    const q2 = new PsyQueue()
+    q2.use(redis({ url: 'redis://127.0.0.1:6381' }))
     const e2eSamples: number[] = []
-    for (let i = 0; i < 50; i++) { await q.enqueue('bench', { i }); await q.processNext('bench') }
+    let e2eResolve: (() => void) | null = null
+
+    q2.handle('bench', async () => {
+      if (e2eResolve) e2eResolve()
+      return { ok: true }
+    })
+
+    try {
+      await q2.start()
+    } catch {
+      // If Redis connection fails for E2E, return results without E2E
+      const memAfter = getMemoryMb()
+      return {
+        system: 'PsyQueue (Redis)',
+        enqueueOpsPerSec: Math.round((count / enqueueMs) * 1000),
+        processOpsPerSec: Math.round((count / processMs) * 1000),
+        e2eP50: 0, e2eP95: 0, e2eP99: 0,
+        memoryMb: Math.round((memAfter - memBefore) * 100) / 100,
+        available: true,
+        skipReason: 'E2E latency not measured (Redis reconnect failed)',
+      }
+    }
+
+    q2.startWorker('bench', { concurrency: 1 })
+
+    // Warmup
+    for (let i = 0; i < 50; i++) {
+      const p = new Promise<void>(resolve => { e2eResolve = resolve })
+      await q2.enqueue('bench', { i })
+      await p
+    }
+
     const sampleCount = Math.min(count, 500)
     for (let i = 0; i < sampleCount; i++) {
+      const p = new Promise<void>(resolve => { e2eResolve = resolve })
       const start = performance.now()
-      await q.enqueue('bench', { i })
-      await q.processNext('bench')
+      await q2.enqueue('bench', { i })
+      await p
       e2eSamples.push(performance.now() - start)
     }
-    await q.stop()
+    await q2.stop()
 
     const sorted = [...e2eSamples].sort((a, b) => a - b)
     const memAfter = getMemoryMb()

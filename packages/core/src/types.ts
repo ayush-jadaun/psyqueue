@@ -142,6 +142,27 @@ export interface BackendAdapter {
   releaseLock(key: string): Promise<void>
 
   atomic(ops: AtomicOp[]): Promise<void>
+
+  /** Whether this backend supports blocking dequeue */
+  supportsBlocking?: boolean
+
+  /**
+   * Block until a job is available or timeout expires.
+   * Returns empty array on timeout. Uses BZPOPMIN (Redis) or LISTEN/NOTIFY (Postgres).
+   * IMPORTANT: This blocks the connection — caller must use a dedicated connection.
+   */
+  blockingDequeue?(queue: string, timeoutMs: number): Promise<DequeuedJob[]>
+
+  /**
+   * Non-blocking batch pop — grab up to `count` jobs immediately.
+   * Called after blockingDequeue unblocks to grab more jobs in the same cycle.
+   */
+  batchDequeue?(queue: string, count: number): Promise<DequeuedJob[]>
+
+  /**
+   * Acknowledge multiple jobs in a single round-trip (pipeline).
+   */
+  ackBatch?(items: Array<{ jobId: string; completionToken?: string }>): Promise<AckResult[]>
 }
 
 // === Event Types ===
@@ -233,3 +254,16 @@ export interface HandlerOpts {
 }
 
 export type JobHandler = (ctx: JobContext) => Promise<unknown>
+
+// === Worker Types ===
+
+export interface WorkerOpts {
+  /** Number of parallel worker loops (default: 1) */
+  concurrency?: number
+  /** Milliseconds to wait in blocking dequeue before retrying (default: 5000) */
+  blockTimeout?: number
+  /** Max jobs to grab per cycle after unblock (default: 1) */
+  batchSize?: number
+  /** Milliseconds between polls for non-blocking backends (default: 50) */
+  pollInterval?: number
+}

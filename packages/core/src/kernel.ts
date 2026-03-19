@@ -13,6 +13,7 @@ import type {
   MiddlewarePhase,
   PaginatedResult,
   PsyPlugin,
+  WorkerOpts,
 } from './types.js'
 import { EventBus } from './event-bus.js'
 import { PluginRegistry } from './plugin-registry.js'
@@ -20,6 +21,7 @@ import { MiddlewarePipeline } from './middleware-pipeline.js'
 import { createJob } from './job.js'
 import { createContext } from './context.js'
 import { PsyQueueError } from './errors.js'
+import { WorkerPool } from './worker.js'
 import { presets, type PresetConfig } from './presets.js'
 
 interface RegisteredHandler {
@@ -37,6 +39,7 @@ export class PsyQueue {
 
   private backend: BackendAdapter | null = null
   private runningState = false
+  private readonly workers = new Map<string, WorkerPool>()
 
   get isRunning(): boolean {
     return this.runningState
@@ -207,10 +210,11 @@ export class PsyQueue {
   }
 
   /**
-   * Stop the queue: stop all plugins and disconnect the backend.
+   * Stop the queue: stop all workers, plugins, and disconnect the backend.
    */
   async stop(): Promise<void> {
     this.runningState = false
+    await this.stopWorkers()
     await this.pluginRegistry.stopAll()
     if (this.backend) {
       await this.backend.disconnect()
@@ -403,6 +407,45 @@ export class PsyQueue {
 
       return true
     }
+  }
+
+  /**
+   * Start a worker pool for the given queue. Jobs are automatically dequeued
+   * and processed using registered handlers.
+   * Uses blocking reads (BZPOPMIN) for Redis, polling for other backends.
+   */
+  startWorker(queue: string, opts: WorkerOpts = {}): void {
+    if (this.workers.has(queue)) {
+      throw new PsyQueueError('WORKER_EXISTS', `Worker already running for queue "${queue}"`)
+    }
+
+    const backend = this.getBackend()
+
+    const pool = new WorkerPool(
+      queue,
+      backend,
+      this.middlewarePipeline,
+      this.handlers,
+      this.eventBus,
+      opts,
+      {
+        enqueue: (name, payload, o) => this.enqueue(name, payload, o),
+        classifyError: (error) => this.classifyError(error),
+        calculateBackoff: (job) => this.calculateBackoff(job),
+      },
+    )
+
+    this.workers.set(queue, pool)
+    pool.start()
+  }
+
+  /**
+   * Stop all worker pools.
+   */
+  async stopWorkers(): Promise<void> {
+    const stops = [...this.workers.values()].map(w => w.stop())
+    await Promise.allSettled(stops)
+    this.workers.clear()
   }
 
   /**

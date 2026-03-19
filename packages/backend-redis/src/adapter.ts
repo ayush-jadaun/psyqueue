@@ -262,11 +262,36 @@ end
 return ids
 `
 
+// Lua script for activating a job after BZPOPMIN has popped it
+// KEYS[1] = active sorted set key
+// KEYS[2] = job hash key
+// ARGV[1] = completion token
+// ARGV[2] = started_at ISO string
+// ARGV[3] = job_id
+// Returns: cjson-encoded HGETALL array, or nil if job hash is missing
+export const ACTIVATE_SCRIPT = `
+local active_key = KEYS[1]
+local hash_key = KEYS[2]
+local token = ARGV[1]
+local started_at = ARGV[2]
+local job_id = ARGV[3]
+
+local exists = redis.call('EXISTS', hash_key)
+if exists == 0 then return nil end
+
+local t = redis.call('TIME')
+redis.call('ZADD', active_key, t[1], job_id)
+redis.call('HSET', hash_key, 'status', 'active', 'started_at', started_at, 'completion_token', token)
+return cjson.encode(redis.call('HGETALL', hash_key))
+`
+
 export class RedisBackendAdapter implements BackendAdapter {
   readonly name = 'redis'
   readonly type = 'redis'
+  readonly supportsBlocking = true
 
   private client: any = null
+  private blockingClients: any[] = []
   private readonly opts: RedisAdapterOpts
   private readonly prefix: string
 
@@ -329,6 +354,12 @@ export class RedisBackendAdapter implements BackendAdapter {
   }
 
   async disconnect(): Promise<void> {
+    // Close all blocking clients first
+    for (const bc of this.blockingClients) {
+      await bc.quit().catch(() => {})
+    }
+    this.blockingClients = []
+
     if (this.client) {
       await this.client.quit()
       this.client = null
@@ -620,6 +651,102 @@ export class RedisBackendAdapter implements BackendAdapter {
         }
       }
     }
+  }
+
+  async blockingDequeue(queue: string, timeoutMs: number): Promise<DequeuedJob[]> {
+    const blockingClient = await this.createBlockingClient()
+    const commandClient = this.getClient()
+
+    const timeoutSec = Math.max(1, Math.ceil(timeoutMs / 1000))
+
+    let result: any
+    try {
+      result = await blockingClient.bzpopmin(this.pendingKey(queue), timeoutSec)
+    } catch {
+      return []
+    }
+
+    // result = [key, member, score] or null on timeout
+    if (!result) return []
+
+    const jobId = result[1] as string // the member (job ID)
+    const token = `${jobId}:${Date.now()}`
+    const startedAt = new Date().toISOString()
+
+    // Activate the job using the command client (non-blocking)
+    const rawData = await commandClient.eval(
+      ACTIVATE_SCRIPT,
+      2,
+      this.activeKey(queue),
+      this.jobKey(jobId),
+      token,
+      startedAt,
+      jobId,
+    ) as string | null
+
+    if (!rawData) return []
+
+    const dataArray: string[] = JSON.parse(rawData)
+    const hashData: Record<string, string> = {}
+    for (let j = 0; j < dataArray.length; j += 2) {
+      hashData[dataArray[j]!] = dataArray[j + 1]!
+    }
+
+    const job = deserializeJobFromHash(hashData)
+    return [{ ...job, completionToken: token }]
+  }
+
+  async batchDequeue(queue: string, count: number): Promise<DequeuedJob[]> {
+    // Non-blocking batch dequeue: just use the existing dequeue
+    return this.dequeue(queue, count)
+  }
+
+  async ackBatch(items: Array<{ jobId: string; completionToken?: string }>): Promise<AckResult[]> {
+    const client = this.getClient()
+    const pipeline = client.pipeline()
+
+    for (const item of items) {
+      pipeline.eval(
+        ACK_SCRIPT,
+        2,
+        this.jobKey(item.jobId),
+        this.keyPrefix(),
+        item.completionToken ?? '',
+        new Date().toISOString(),
+        item.jobId,
+      )
+    }
+
+    const results = await pipeline.exec()
+    return results!.map(([err, val]: [Error | null, unknown]) => ({
+      alreadyCompleted: err != null || val === 0,
+    }))
+  }
+
+  private async createBlockingClient(): Promise<any> {
+    let blockingClient: any
+    if (this.opts.url) {
+      blockingClient = new Redis(this.opts.url)
+    } else {
+      blockingClient = new Redis({
+        host: this.opts.host ?? 'localhost',
+        port: this.opts.port ?? 6379,
+        password: this.opts.password,
+        db: this.opts.db ?? 0,
+      })
+    }
+
+    // Wait for ready
+    await new Promise<void>((resolve, reject) => {
+      const onReady = () => { blockingClient.off('error', onError); resolve() }
+      const onError = (err: Error) => { blockingClient.off('ready', onReady); reject(err) }
+      blockingClient.once('ready', onReady)
+      blockingClient.once('error', onError)
+      if (blockingClient.status === 'ready') resolve()
+    })
+
+    this.blockingClients.push(blockingClient)
+    return blockingClient
   }
 
   private getClient(): any {
