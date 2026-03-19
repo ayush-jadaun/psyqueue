@@ -297,15 +297,17 @@ async function benchmarkPgBoss(count: number): Promise<ComparisonEntry> {
     const processStart = performance.now()
 
     while (processedCount < count) {
-      const job = await boss.fetch(queueName)
-      if (job) {
-        await boss.complete(queueName, job.id)
-        processedCount++
+      // v10: fetch returns an array of jobs
+      const jobs = await boss.fetch(queueName) as any[]
+      if (jobs && jobs.length > 0) {
+        for (const job of jobs) {
+          await boss.complete(queueName, job.id)
+          processedCount++
+        }
       }
     }
     const processMs = performance.now() - processStart
 
-    await boss.deleteQueue(queueName).catch(() => {})
     await boss.stop()
     const memAfter = getMemoryMb()
 
