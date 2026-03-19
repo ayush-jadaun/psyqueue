@@ -86,19 +86,30 @@ async function main() {
   console.log(`  Bulk enqueued ${bulkIds.length} jobs: ${bulkIds.map(id => id.slice(0, 8)).join(', ')}`)
 
   // --- Process all queued jobs ---
-  console.log('\n-- Processing jobs --')
+  console.log('\n-- Processing jobs (using processNext loop) --')
 
-  // Process the email queue
+  // Process the email queue one-at-a-time
   let processed = true
   while (processed) {
     processed = await q.processNext('email')
   }
 
-  // Process the default queue
+  // Process the default queue one-at-a-time
   processed = true
   while (processed) {
     processed = await q.processNext('default')
   }
+
+  // --- Alternative: use startWorker() for continuous processing ---
+  // In production, you would use startWorker() instead of the manual loop above.
+  // Uncomment the following to see it in action:
+  //
+  // q.startWorker('email', { concurrency: 5 })
+  // q.startWorker('default', { concurrency: 5 })
+  //
+  // startWorker() automatically dequeues jobs and dispatches them to handlers.
+  // It uses blocking reads (BRPOPLPUSH) for Redis or polling for SQLite.
+  // Workers are stopped automatically when q.stop() is called.
 
   // --- Inspect the backend directly ---
   const backend = q.getExposed('backend') as { listJobs: Function }

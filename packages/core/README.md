@@ -25,7 +25,13 @@ q.handle('email.send', async (ctx) => {
 
 await q.start()
 await q.enqueue('email.send', { to: 'alice@example.com', subject: 'Hello' })
+
+// Simple: process one job at a time
 await q.processNext('email.send')
+
+// Production: start a continuous worker pool
+q.startWorker('email.send', { concurrency: 10 })
+
 await q.stop()
 ```
 
@@ -40,9 +46,11 @@ await q.stop()
 | `q.enqueue(name, payload, opts?)` | Enqueue a job |
 | `q.enqueueBulk(items)` | Bulk enqueue jobs |
 | `q.processNext(queue)` | Dequeue and process the next job |
+| `q.startWorker(queue, opts?)` | Start a continuous worker pool for a queue |
+| `q.stopWorkers()` | Stop all running worker pools |
 | `q.pipeline(event, fn, opts?)` | Register middleware |
 | `q.start()` | Start the queue |
-| `q.stop()` | Stop the queue |
+| `q.stop()` | Stop the queue (also stops all workers) |
 | `q.events` | Event bus for lifecycle events |
 | `q.deadLetter` | Dead letter queue management |
 

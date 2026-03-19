@@ -390,17 +390,38 @@ async function main() {
   // DEMO SECTION 5: Process everything
   // ─────────────────────────────────────────────────────────────────────────
 
-  console.log('\n=== 5. Processing all jobs ===')
+  console.log('\n=== 5. Processing all jobs (using startWorker) ===')
 
   // Wait for fusions to batch
   await new Promise(r => setTimeout(r, 400))
 
-  for (let i = 0; i < 80; i++) {
-    const processed = await q.processNext('default')
-    if (!processed) break
-    // Brief pause to let circuit breaker reset
-    if (i === 5) await new Promise(r => setTimeout(r, 1_600))
+  // Use startWorker() for continuous processing with concurrency control.
+  // This is the production-recommended approach -- it manages the dequeue loop
+  // automatically, uses blocking reads for Redis backends, and applies
+  // semaphore-controlled concurrency.
+  let completedCount = 0
+  const expectedJobs = 20 // approximate -- some jobs are fused, some rate-limited
+
+  q.events.on('job:completed', () => { completedCount++ })
+  q.events.on('job:dead', () => { completedCount++ })
+
+  q.startWorker('default', {
+    concurrency: 10,
+    pollInterval: 50,
+  })
+
+  // Wait for jobs to be processed (with timeout for safety)
+  const deadline = Date.now() + 15_000
+  while (completedCount < expectedJobs && Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 100))
+    // Allow circuit breaker recovery time
+    if (completedCount >= 3 && completedCount <= 6) {
+      await new Promise(r => setTimeout(r, 1_600))
+    }
   }
+
+  // Stop workers before inspecting results
+  await q.stopWorkers()
 
   // ─────────────────────────────────────────────────────────────────────────
   // DEMO SECTION 6: Inspect results

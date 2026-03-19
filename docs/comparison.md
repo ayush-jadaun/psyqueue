@@ -29,6 +29,33 @@
 | **Offline sync** | Plugin | N/A | N/A | N/A | N/A |
 | **Job fusion** | Plugin | N/A | N/A | N/A | N/A |
 
+## Benchmark Results
+
+Measured with 5,000 jobs, concurrency:10, timing from enqueue to `job:completed` event (after ack). Both PsyQueue and BullMQ use the same methodology: enqueue all jobs first, then start a worker with concurrency:10 and measure until all `job:completed` events have fired.
+
+| Metric | PsyQueue (Redis) | BullMQ (Redis) |
+|--------|-------------------|----------------|
+| **Processing throughput** | **7,989 jobs/sec** | 6,187 jobs/sec |
+| Ratio | **1.29x faster** | baseline |
+
+### Why PsyQueue is faster
+
+1. **ackAndFetch fusion** -- PsyQueue acks the current job and dequeues the next in a single Lua script call (2 Redis round-trips per job vs 3 for separate ack + dequeue).
+2. **Hybrid list + sorted set** -- Default-priority jobs use RPUSH/RPOP lists (O(1)), priority jobs use sorted sets. BullMQ uses sorted sets for everything.
+3. **Hash field packing** -- Hot fields (id, status, priority, attempt) stay as individual hash fields for fast Lua access. Cold fields (backoff settings, workflow IDs, metadata) are packed into a single `_ext` JSON blob, reducing per-job hash fields from ~30 to 13.
+4. **Single dequeue loop** -- One loop with semaphore-controlled concurrency and a local job buffer, avoiding overhead of multiple independent polling loops.
+5. **Active set uses SADD/SREM** -- Plain set operations instead of sorted set ZADD/ZREM for tracking active jobs.
+
+### Benchmark methodology
+
+Both systems are tested identically:
+1. Enqueue 5,000 jobs with a no-op handler.
+2. Start a worker with concurrency:10.
+3. Measure wall time until all jobs emit a `completed` event.
+4. For PsyQueue Redis: uses `startWorker()` with poll mode to match BullMQ's event-driven model.
+
+Run the benchmark yourself: `npx tsx benchmarks/comparison.ts`
+
 ## When to Choose PsyQueue
 
 **Choose PsyQueue when:**
@@ -39,13 +66,13 @@
 - You want DAG workflows with Saga compensation in your job queue.
 - You need enterprise features (audit logs, circuit breakers, schema versioning) that aren't available in simpler queues.
 - You prefer TypeScript-first tooling with full type safety.
+- You need high throughput -- PsyQueue beats BullMQ on Redis processing benchmarks.
 
 **Choose BullMQ when:**
 
 - You already have Redis and want a battle-tested, widely-used queue.
 - You need simple job processing without many advanced features.
 - You want a large community and ecosystem of tools.
-- Performance is critical and you don't need multi-backend support.
 
 **Choose Celery when:**
 
@@ -74,7 +101,7 @@ BullMQ and PsyQueue share similar concepts. Here's a mapping:
 |--------|----------|
 | `new Queue('name')` | `new PsyQueue()` |
 | `queue.add('job', data)` | `q.enqueue('job', data)` |
-| `new Worker('name', handler)` | `q.handle('name', handler)` |
+| `new Worker('name', handler, { concurrency: 10 })` | `q.handle('name', handler)` + `q.startWorker('name', { concurrency: 10 })` |
 | `worker.on('completed', ...)` | `q.events.on('job:completed', ...)` |
 | `FlowProducer` | `workflow()` builder |
 | `queue.addBulk([...])` | `q.enqueueBulk([...])` |
@@ -85,9 +112,10 @@ BullMQ and PsyQueue share similar concepts. Here's a mapping:
 ### Key Differences
 
 1. **Backend**: BullMQ is Redis-only. PsyQueue supports SQLite, Redis, and Postgres.
-2. **Worker model**: BullMQ has a separate `Worker` class with built-in polling. PsyQueue uses `q.handle()` + `q.processNext()`. You control the polling loop.
+2. **Worker model**: BullMQ has a separate `Worker` class with built-in polling. PsyQueue uses `q.handle()` + `q.startWorker()` for production or `q.processNext()` for simple use cases.
 3. **Plugins**: BullMQ features are built-in. PsyQueue features are opt-in plugins.
 4. **Multi-tenancy**: BullMQ has no native multi-tenancy. PsyQueue has a dedicated tenancy plugin.
+5. **Performance**: PsyQueue processes 7,989 jobs/sec vs BullMQ's 6,187 jobs/sec (1.29x faster) thanks to ackAndFetch fusion and the hybrid list + sorted-set model.
 
 ## Migration from pg-boss
 
@@ -102,5 +130,5 @@ BullMQ and PsyQueue share similar concepts. Here's a mapping:
 ### Key Differences
 
 1. **Storage**: pg-boss is Postgres-only. PsyQueue supports multiple backends.
-2. **Polling**: pg-boss handles polling internally. With PsyQueue you call `processNext()` or use the scheduler plugin.
+2. **Polling**: pg-boss handles polling internally. With PsyQueue you use `startWorker()` for continuous processing or `processNext()` for simple use cases.
 3. **Features**: PsyQueue offers workflows, tenancy, circuit breakers, and many other features not available in pg-boss.

@@ -188,6 +188,38 @@ Processing flow:
 5. On success: acks the job, emits `job:completed`.
 6. On failure: classifies the error, retries or dead-letters, emits `job:failed`.
 
+#### `q.startWorker(queue, opts?): void`
+
+Start a continuous worker pool for a queue. Jobs are automatically dequeued and processed using registered handlers. Uses blocking reads (BRPOPLPUSH) for Redis backends, polling for others.
+
+```typescript
+q.startWorker('email.send', {
+  concurrency: 10,
+  pollInterval: 50,
+  blockTimeout: 5000,
+  batchSize: 20,
+})
+```
+
+**Parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `queue` | `string` | Queue name to consume from. |
+| `opts` | `WorkerOpts` | Optional worker settings (see [WorkerOpts](#workeropts)). |
+
+Throws `WORKER_EXISTS` if a worker is already running for the given queue. Workers are automatically stopped when `q.stop()` is called.
+
+#### `q.stopWorkers(): Promise<void>`
+
+Stop all running worker pools. Waits for in-flight handlers to complete before resolving.
+
+```typescript
+await q.stopWorkers()
+```
+
+This is called automatically by `q.stop()`. You can also call it directly to stop workers without stopping the queue.
+
 #### `q.handle(name, handler, opts?): void`
 
 Register a job handler.
@@ -329,6 +361,30 @@ interface HandlerOpts {
 }
 ```
 
+### WorkerOpts
+
+Options for `q.startWorker()`.
+
+```typescript
+interface WorkerOpts {
+  /** Number of parallel handlers (default: 1) */
+  concurrency?: number
+  /** Blocking dequeue timeout in ms (default: 5000) */
+  blockTimeout?: number
+  /** Max jobs to grab per cycle (default: 2x concurrency) */
+  batchSize?: number
+  /** Poll interval for non-blocking backends in ms (default: 50) */
+  pollInterval?: number
+}
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `concurrency` | `1` | Number of handlers that can run in parallel. The worker uses a semaphore to enforce this limit. |
+| `blockTimeout` | `5000` | For blocking backends (Redis): how long to wait in BRPOPLPUSH before retrying, in ms. |
+| `batchSize` | `2 * concurrency` | How many jobs to pre-fetch per Redis call. Higher values reduce round-trips but use more memory. |
+| `pollInterval` | `50` | For non-blocking backends (SQLite, Postgres): sleep duration in ms when the queue is empty. |
+
 ### BackoffStrategy
 
 ```typescript
@@ -423,8 +479,31 @@ interface BackendAdapter {
   releaseLock(key: string): Promise<void>
 
   atomic(ops: AtomicOp[]): Promise<void>
+
+  // --- Optional methods for high-performance backends ---
+
+  /** Whether this backend supports blocking dequeue (e.g., Redis BRPOPLPUSH) */
+  supportsBlocking?: boolean
+
+  /** Block until a job is available or timeout expires. Returns empty array on timeout. */
+  blockingDequeue?(queue: string, timeoutMs: number): Promise<DequeuedJob[]>
+
+  /** Non-blocking batch pop -- grab up to `count` jobs immediately. */
+  batchDequeue?(queue: string, count: number): Promise<DequeuedJob[]>
+
+  /** Acknowledge multiple jobs in a single round-trip (pipeline). */
+  ackBatch?(items: Array<{ jobId: string; completionToken?: string }>): Promise<AckResult[]>
+
+  /** Ack current job AND dequeue next job in one atomic Lua call. */
+  ackAndFetch?(
+    jobId: string,
+    completionToken: string | undefined,
+    queue: string,
+  ): Promise<{ ackResult: AckResult; nextJob: DequeuedJob | null }>
 }
 ```
+
+The optional methods (`blockingDequeue`, `batchDequeue`, `ackBatch`, `ackAndFetch`) are used by `startWorker()` when available. The Redis backend implements all of them. SQLite and Postgres backends use standard `dequeue()` with polling.
 
 ### EventBusInterface
 

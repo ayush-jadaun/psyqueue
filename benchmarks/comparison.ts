@@ -1,3 +1,14 @@
+/**
+ * Comparison Benchmarks
+ *
+ * Fair benchmark methodology:
+ * - 5,000 jobs with a no-op handler, concurrency:10
+ * - Processing throughput is measured using job:completed events (after ack),
+ *   not handler invocation counts, so the measurement includes ack overhead
+ * - Both PsyQueue and BullMQ use their worker/event-driven model
+ * - PsyQueue uses startWorker() with poll mode for Redis
+ * - BullMQ uses its native Worker class
+ */
 import { PsyQueue } from 'psyqueue'
 import { sqlite } from '@psyqueue/backend-sqlite'
 import { redis } from '@psyqueue/backend-redis'
@@ -90,7 +101,7 @@ async function benchmarkPsyQueueRedis(count: number): Promise<ComparisonEntry> {
     q.use(redis({ url: 'redis://127.0.0.1:6381' }))
 
     let processed = 0
-    q.handle('bench', async () => { processed++; return { ok: true } })
+    q.handle('bench', async () => ({ ok: true }))
 
     try { await q.start() } catch {
       return { system: 'PsyQueue (Redis)', enqueueOpsPerSec: 0, processOpsPerSec: 0, e2eP50: 0, e2eP95: 0, e2eP99: 0, memoryMb: 0, available: false, skipReason: 'Redis not available at 127.0.0.1:6381' }
@@ -102,10 +113,12 @@ async function benchmarkPsyQueueRedis(count: number): Promise<ComparisonEntry> {
     const enqueueMs = performance.now() - enqueueStart
 
     // Process — poll mode, concurrency:10 (matches BullMQ concurrency:10)
+    // Uses job:completed event for fair comparison with BullMQ (measures after ack)
     processed = 0
     const backend = (q as any).backend
     if (backend) backend.supportsBlocking = false
     const processStart = performance.now()
+    q.events.on('job:completed', () => { processed++ })
     q.startWorker('bench', { concurrency: 10, pollInterval: 1 })
     while (processed < count) await new Promise(r => setTimeout(r, 5))
     const processMs = performance.now() - processStart
@@ -327,7 +340,7 @@ export interface ComparisonResults {
   entries: ComparisonEntry[]
 }
 
-export async function runComparisonBenchmarks(count = 1000): Promise<ComparisonResults> {
+export async function runComparisonBenchmarks(count = 5000): Promise<ComparisonResults> {
   const entries: ComparisonEntry[] = []
 
   entries.push(await benchmarkPsyQueue(count))

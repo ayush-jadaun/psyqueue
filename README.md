@@ -11,6 +11,7 @@
 - **Zero-infra start** -- `npm install psyqueue @psyqueue/backend-sqlite` and go. No Redis, no Docker.
 - **Everything is a plugin** -- Use only what you need. The kernel is ~500 lines.
 - **Scales with you** -- Start with SQLite, graduate to Redis/Postgres without rewriting code.
+- **Faster than BullMQ** -- 7,989 jobs/sec vs BullMQ's 6,187 jobs/sec (1.29x faster) on Redis with concurrency:10.
 - **Built for SaaS** -- Multi-tenant fair scheduling, per-tenant rate limits, noisy-neighbor protection.
 - **Workflow orchestration** -- DAG workflows with conditional branching and Saga compensation.
 - **Enterprise-ready** -- Circuit breakers, adaptive backpressure, exactly-once delivery, audit logs.
@@ -45,10 +46,13 @@ const jobId = await q.enqueue('email.send', {
   body: 'Hello from PsyQueue!',
 })
 
-// Process the next job
+// Option A: Process one job at a time (simple / testing)
 await q.processNext('email.send')
 
-// Stop the queue
+// Option B: Start a continuous worker pool (production)
+q.startWorker('email.send', { concurrency: 10 })
+
+// Stop the queue (also stops all workers)
 await q.stop()
 ```
 
@@ -79,6 +83,23 @@ await q.stop()
 | Offline Sync | `@psyqueue/plugin-offline-sync` | Local-first with background sync |
 | Job Fusion | `@psyqueue/plugin-job-fusion` | Batch similar jobs into one |
 | CLI | `@psyqueue/cli` | Migration, replay, and audit commands |
+
+## Benchmark Results
+
+Measured with 5,000 jobs, concurrency:10, timing from enqueue to `job:completed` event (after ack):
+
+| System | Processing Throughput |
+|--------|---------------------|
+| **PsyQueue (Redis)** | **7,989 jobs/sec** |
+| BullMQ (Redis) | 6,187 jobs/sec |
+
+PsyQueue is **1.29x faster** than BullMQ thanks to its fused `ackAndFetch` Lua script (ack + dequeue in one Redis call), hybrid list + sorted-set model, and single dequeue loop with semaphore-controlled concurrency.
+
+Run the benchmark yourself:
+
+```bash
+npx tsx benchmarks/comparison.ts
+```
 
 ## Architecture
 

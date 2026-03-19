@@ -287,6 +287,46 @@ interface BackendAdapter {
 
 This abstraction allows you to swap backends without changing application code. The dequeue operation returns a `completionToken` for at-least-once delivery guarantees.
 
+## Worker Architecture
+
+PsyQueue's worker system (`startWorker()`) uses a single dequeue loop with semaphore-controlled concurrency. This design avoids the overhead of multiple polling loops while still achieving high parallelism.
+
+### Single Dequeue Loop + Semaphore
+
+Instead of spawning N independent polling loops (one per concurrency slot), PsyQueue runs ONE dequeue loop that:
+
+1. Waits for a free concurrency slot (semaphore).
+2. Fetches jobs from the backend.
+3. Dispatches jobs to handlers without waiting for them to complete.
+4. Loops back immediately to fetch more.
+
+This means the loop is never blocked waiting for a handler to finish -- it keeps pulling as long as concurrency slots are available.
+
+### Blocking vs Poll Mode
+
+The worker automatically selects the right dequeue strategy based on the backend:
+
+**Blocking mode** (Redis -- `supportsBlocking: true`):
+1. Try a non-blocking batch grab first (fast path via `batchDequeue()`).
+2. If the queue is empty, fall back to BRPOPLPUSH (blocking wait) -- the Redis connection blocks until a job arrives or the timeout expires.
+3. When BRPOPLPUSH unblocks, immediately batch-grab more jobs to fill the local buffer.
+
+**Poll mode** (SQLite, Postgres -- `supportsBlocking: false`):
+- Standard poll with `dequeue()`, sleeping for `pollInterval` ms when the queue is empty.
+
+### ackAndFetch Fusion
+
+When a handler completes successfully, PsyQueue uses the backend's `ackAndFetch()` method (when available) to ack the current job AND dequeue the next job in a single Lua script call. This reduces per-job Redis round-trips from 3 to 2:
+
+- Without fusion: `dequeue` + `ack` + `dequeue` (3 calls per job)
+- With fusion: `dequeue` + `ackAndFetch` (2 calls per job)
+
+This is similar to BullMQ's `moveToFinished` optimization and is a key driver of PsyQueue's throughput advantage.
+
+### Job Buffer
+
+The worker maintains a local buffer of pre-fetched jobs. When the backend returns more jobs than there are free concurrency slots, the extras are buffered locally and dispatched as slots free up -- without making additional backend calls. The buffer size is controlled by the `batchSize` option (defaults to 2x concurrency).
+
 ## Job Lifecycle
 
 ```

@@ -66,6 +66,49 @@ Key points:
 - `processNext` dequeues one job, runs the handler, and acks/nacks automatically.
 - The `ctx.log` logger prefixes messages with the job ID.
 
+## Production Worker Mode
+
+For production use, `startWorker()` launches a continuous worker pool that automatically dequeues and processes jobs. It uses blocking reads (BRPOPLPUSH) for Redis backends and polling for SQLite/Postgres.
+
+```typescript
+import { PsyQueue } from 'psyqueue'
+import { redis } from '@psyqueue/backend-redis'
+
+const q = new PsyQueue()
+q.use(redis({ host: 'localhost', port: 6379 }))
+
+q.handle('email.send', async (ctx) => {
+  const { to, subject } = ctx.job.payload as { to: string; subject: string }
+  await sendEmail(to, subject)
+  return { sent: true }
+})
+
+await q.start()
+
+// Start a worker pool with 10 concurrent handlers
+q.startWorker('email.send', {
+  concurrency: 10,      // Max parallel handlers (default: 1)
+  pollInterval: 50,     // Poll interval for non-blocking backends in ms (default: 50)
+  blockTimeout: 5000,   // Blocking dequeue timeout in ms (default: 5000)
+  batchSize: 20,        // Jobs to pre-fetch per cycle (default: 2x concurrency)
+})
+
+// Enqueue jobs -- the worker picks them up automatically
+await q.enqueue('email.send', { to: 'alice@example.com', subject: 'Hello' })
+
+// Graceful shutdown (stops all workers, then the queue)
+await q.stop()
+```
+
+**When to use which:**
+
+| Method | Use Case |
+|--------|----------|
+| `processNext(queue)` | Tests, scripts, one-off processing, simple loops |
+| `startWorker(queue, opts)` | Production services, high-throughput processing |
+
+`startWorker()` manages the dequeue loop for you -- it uses a single loop with semaphore-controlled concurrency, pre-fetches jobs into a local buffer to reduce Redis round-trips, and uses `ackAndFetch` fusion when available to ack the current job and dequeue the next in a single Redis call.
+
 ## Adding Retry Logic
 
 PsyQueue retries failed jobs automatically. The default is 3 retries with exponential backoff.

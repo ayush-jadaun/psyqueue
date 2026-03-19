@@ -93,15 +93,48 @@ q.use(redis({
 ### When to Use
 
 - Production multi-worker deployments
-- High-throughput job processing (10k+ jobs/sec)
+- High-throughput job processing (7,989 jobs/sec with concurrency:10 -- 1.29x faster than BullMQ)
 - When you already have Redis in your infrastructure
 - Real-time applications needing sub-millisecond dequeue latency
 
+### Architecture
+
+The Redis backend uses a **hybrid list + sorted-set model** optimized for throughput:
+
+**Hybrid dequeue model:**
+- Default-priority jobs (priority = 0) use a Redis LIST with RPUSH/RPOP -- O(1) enqueue and dequeue.
+- Priority jobs (priority > 0) use a sorted set for ordering, then get promoted to the front of the ready list via LPUSH. This means the hot path (most jobs) avoids sorted-set overhead entirely.
+
+**BRPOPLPUSH for blocking dequeue:**
+- When used with `startWorker()`, the Redis backend uses BRPOPLPUSH for blocking dequeue -- the connection blocks until a job arrives, eliminating polling overhead.
+- A dedicated blocking client connection is created for this purpose, separate from the command connection.
+
+**Hash field packing (hot/cold split):**
+- Each job is stored as a Redis hash with 13 fields instead of ~30.
+- Hot fields (id, queue, name, payload, status, priority, attempt, max_retries, completion_token, created_at, started_at, completed_at) stay as individual hash fields for fast Lua script access.
+- Cold fields (backoff settings, workflow IDs, tenant IDs, trace IDs, metadata, etc.) are packed into a single `_ext` JSON blob.
+
+**ackAndFetch fusion:**
+- A single Lua script acks the current job AND dequeues the next job atomically. This reduces per-job Redis round-trips from 3 to 2, similar to BullMQ's `moveToFinished` optimization.
+
+**Active set uses SADD/SREM:**
+- Active job tracking uses a plain Redis set (SADD/SREM) instead of a sorted set (ZADD/ZREM), since active jobs don't need ordering.
+
+### Performance
+
+| Metric | PsyQueue Redis | BullMQ Redis |
+|--------|---------------|-------------|
+| Processing throughput | **7,989 jobs/sec** | 6,187 jobs/sec |
+
+Benchmark: 5,000 jobs, concurrency:10, no-op handler, measured after ack.
+
 ### Features
 
-- Atomic operations via Lua scripts
+- Atomic operations via Lua scripts (enqueue, dequeue, ack, nack, ackAndFetch)
 - Distributed locking for cron leader election
-- Sorted sets for priority-based dequeue
+- Hybrid list + sorted set for priority-based dequeue
+- Blocking dequeue (BRPOPLPUSH) for zero-latency job pickup
+- Batch dequeue for reduced round-trips
 - Pub/sub for real-time notifications
 
 ---
