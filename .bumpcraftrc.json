@@ -1,0 +1,22 @@
+{
+  "versionSource": "package.json",
+  "plugins": [
+    "bumpcraft-plugin-conventional-commits",
+    "bumpcraft-plugin-changelog-md"
+  ],
+  "branches": {
+    "release": ["main"],
+    "preRelease": { "dev": "beta" }
+  },
+  "commitTypes": {
+    "feat": "minor",
+    "fix": "patch",
+    "perf": "patch",
+    "test": "none",
+    "docs": "none",
+    "chore": "none"
+  },
+  "policies": {
+    "autoRelease": ["patch", "minor", "major"]
+  }
+}

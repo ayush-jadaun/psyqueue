@@ -10,11 +10,15 @@
     "build": "turbo run build",
     "test": "turbo run test",
     "lint": "turbo run lint",
-    "clean": "turbo run clean"
+    "clean": "turbo run clean",
+    "release": "bumpcraft release",
+    "release:dry": "bumpcraft release --dry-run",
+    "release:preview": "bumpcraft validate"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",
     "@vitest/coverage-v8": "^3.2.4",
+    "bumpcraft": "^1.0.3",
     "eslint": "^9.0.0",
     "prettier": "^3.4.0",
     "turbo": "^2.4.0",
