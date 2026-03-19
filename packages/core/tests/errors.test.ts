@@ -19,7 +19,7 @@ describe('PsyQueueError', () => {
   it('has the correct code and message', () => {
     const err = new PsyQueueError('MY_CODE', 'my message')
     expect(err.code).toBe('MY_CODE')
-    expect(err.message).toBe('my message')
+    expect(err.message).toBe('[MY_CODE] my message')
   })
 
   it('stores context when provided', () => {
@@ -55,7 +55,7 @@ describe('PluginError', () => {
   it('includes the plugin name in the message', () => {
     const err = new PluginError('my-plugin', 'something broke')
     expect(err.message).toContain('my-plugin')
-    expect(err.message).toBe('[my-plugin] something broke')
+    expect(err.message).toBe('[PLUGIN_ERROR] [my-plugin] something broke')
   })
 
   it('exposes pluginName property', () => {

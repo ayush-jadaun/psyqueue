@@ -63,6 +63,16 @@ importers:
         specifier: ^3.0.0
         version: 3.2.4(@types/node@25.5.0)
 
+  packages/plugin-exactly-once:
+    dependencies:
+      psyqueue:
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.4(@types/node@25.5.0)
+
   packages/plugin-scheduler:
     dependencies:
       cron-parser:
@@ -71,6 +81,19 @@ importers:
       psyqueue:
         specifier: workspace:*
         version: link:../core
+    devDependencies:
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.4(@types/node@25.5.0)
+
+  packages/plugin-schema-versioning:
+    dependencies:
+      psyqueue:
+        specifier: workspace:*
+        version: link:../core
+      zod:
+        specifier: ^3.24.0
+        version: 3.25.76
     devDependencies:
       vitest:
         specifier: ^3.0.0
@@ -1129,6 +1152,9 @@ packages:
     resolution: {integrity: sha512-rVksvsnNCdJ/ohGc6xgPwyN8eheCxsiLM8mxuE/t/mOVqJewPuO1miLpTHQiRgTKCLexL4MeAFVagts7HmNZ2Q==}
     engines: {node: '>=10'}
 
+  zod@3.25.76:
+    resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
+
 snapshots:
 
   '@esbuild/aix-ppc64@0.27.4':
@@ -2069,3 +2095,5 @@ snapshots:
   wrappy@1.0.2: {}
 
   yocto-queue@0.1.0: {}
+
+  zod@3.25.76: {}

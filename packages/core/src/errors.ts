@@ -3,7 +3,7 @@ export class PsyQueueError extends Error {
   public readonly context?: Record<string, unknown>
 
   constructor(code: string, message: string, context?: Record<string, unknown>) {
-    super(message)
+    super(`[${code}] ${message}`)
     this.name = 'PsyQueueError'
     this.code = code
     this.context = context
