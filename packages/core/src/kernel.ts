@@ -35,7 +35,11 @@ export class PsyQueue {
   private readonly exposed = new Map<string, Record<string, unknown>>()
 
   private backend: BackendAdapter | null = null
-  private running = false
+  private runningState = false
+
+  get isRunning(): boolean {
+    return this.runningState
+  }
   private coreMiddlewareRegistered = false
 
   /** Public event bus for subscriptions */
@@ -167,7 +171,7 @@ export class PsyQueue {
 
     await this.backend.connect()
     await this.pluginRegistry.startAll()
-    this.running = true
+    this.runningState = true
     this.eventBus.emit('kernel:started', {})
   }
 
@@ -175,7 +179,7 @@ export class PsyQueue {
    * Stop the queue: stop all plugins and disconnect the backend.
    */
   async stop(): Promise<void> {
-    this.running = false
+    this.runningState = false
     await this.pluginRegistry.stopAll()
     if (this.backend) {
       await this.backend.disconnect()
