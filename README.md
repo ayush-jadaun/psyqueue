@@ -15,7 +15,7 @@
 - **On par with BullMQ on Redis** -- Fair benchmark included, run it yourself.
 - **Built for SaaS** -- Multi-tenant fair scheduling, per-tenant rate limits, noisy-neighbor protection.
 - **Workflow orchestration** -- DAG workflows with conditional branching and Saga compensation.
-- **Enterprise-ready** -- Circuit breakers, adaptive backpressure, exactly-once delivery, audit logs.
+- **Enterprise-ready** -- Circuit breakers, adaptive backpressure, idempotent enqueue, audit logs.
 
 ## Quick Start
 
@@ -71,7 +71,7 @@ await q.stop()
 | Multi-Tenancy | `@psyqueue/plugin-tenancy` | Per-tenant rate limits and fair scheduling |
 | Circuit Breaker | `@psyqueue/plugin-circuit-breaker` | Protect downstream services |
 | Backpressure | `@psyqueue/plugin-backpressure` | Adaptive load shedding |
-| Exactly-Once | `@psyqueue/plugin-exactly-once` | Idempotency key deduplication |
+| Idempotent Enqueue | `@psyqueue/plugin-exactly-once` | Atomic idempotency-key dedup across processes |
 | OTel Tracing | `@psyqueue/plugin-otel-tracing` | OpenTelemetry distributed tracing |
 | Metrics | `@psyqueue/plugin-metrics` | Prometheus metrics (prom-client) |
 | Audit Log | `@psyqueue/plugin-audit-log` | Tamper-evident hash-chained audit trail |

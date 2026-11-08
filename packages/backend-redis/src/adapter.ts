@@ -450,6 +450,35 @@ redis.call('ZADD', priority_key, score, job_id)
 return 1
 `
 
+// Idempotent enqueue: one live job per idempotency key, checked and inserted
+// atomically. The key is reusable once it expires or its job failed/died.
+// KEYS[1] = idempotency key, KEYS[2] = job hash, KEYS[3] = target list/zset,
+// KEYS[4] = job hash prefix
+// ARGV[1] = job id, ARGV[2] = ttl ms, ARGV[3] = 'list' | 'zset', ARGV[4] = zset score,
+// ARGV[5..] = job hash field/value pairs
+// Returns the id of the job that holds the key (ARGV[1] if newly inserted)
+export const ENQUEUE_IDEMPOTENT_SCRIPT = `
+local existing = redis.call('GET', KEYS[1])
+if existing then
+  local status = redis.call('HGET', KEYS[4] .. existing, 'status')
+  if status and status ~= 'failed' and status ~= 'dead' then
+    return existing
+  end
+end
+redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
+local fields = {}
+for i = 5, #ARGV do fields[#fields + 1] = ARGV[i] end
+redis.call('HSET', KEYS[2], unpack(fields))
+if ARGV[3] == 'list' then
+  redis.call('RPUSH', KEYS[3], ARGV[1])
+else
+  redis.call('ZADD', KEYS[3], ARGV[4], ARGV[1])
+end
+return ARGV[1]
+`
+
+const DEFAULT_IDEMPOTENCY_TTL = 24 * 60 * 60 * 1000
+
 // Poll scheduled: move due jobs from scheduled set to the ready list
 // KEYS[1] = scheduled sorted set key
 // KEYS[2] = ready list key (for priority=0 jobs)
@@ -703,6 +732,9 @@ export class RedisBackendAdapter implements BackendAdapter {
   }
 
   async enqueue(job: Job): Promise<string> {
+    if (job.idempotencyKey) return this.enqueueIdempotent(job)
+    if (job.status === 'scheduled' && job.runAt) return this.scheduleAt(job, job.runAt)
+
     const client = this.getClient()
     const hash = serializeJobToHash(job)
 
@@ -730,7 +762,48 @@ export class RedisBackendAdapter implements BackendAdapter {
     return job.id
   }
 
+  /** Atomic check-and-insert for jobs with an idempotency key. */
+  private async enqueueIdempotent(job: Job): Promise<string> {
+    let target: string
+    let mode: 'list' | 'zset'
+    let score = 0
+    if (job.status === 'scheduled' && job.runAt) {
+      target = this.scheduledKey(); mode = 'zset'; score = job.runAt.getTime()
+    } else if (job.priority > 0) {
+      target = this.priorityKey(job.queue); mode = 'zset'; score = computePendingScore(job.priority, job.createdAt)
+    } else {
+      target = this.readyKey(job.queue); mode = 'list'
+    }
+    const fields = Object.entries(serializeJobToHash(job)).flat()
+    return await this.getClient().eval(
+      ENQUEUE_IDEMPOTENT_SCRIPT,
+      4,
+      `${this.prefix}:idem:${job.queue}:${job.name}:${job.idempotencyKey}`,
+      this.jobKey(job.id),
+      target,
+      this.jobHashPrefix(),
+      job.id,
+      String(job.idempotencyTtl ?? DEFAULT_IDEMPOTENCY_TTL),
+      mode,
+      String(score),
+      ...fields,
+    ) as string
+  }
+
   async enqueueBulk(jobs: Job[]): Promise<string[]> {
+    // Keyed and scheduled jobs take the single-job path; the rest are batched
+    const ids = jobs.map(j => j.id)
+    const plain: Job[] = []
+    for (let i = 0; i < jobs.length; i++) {
+      const job = jobs[i]!
+      if (job.idempotencyKey || job.status === 'scheduled') ids[i] = await this.enqueue(job)
+      else plain.push(job)
+    }
+    if (plain.length > 0) await this.enqueuePlainBatch(plain)
+    return ids
+  }
+
+  private async enqueuePlainBatch(jobs: Job[]): Promise<void> {
     const client = this.getClient()
     const pipeline = client.pipeline()
 
@@ -769,7 +842,6 @@ export class RedisBackendAdapter implements BackendAdapter {
     }
 
     await pipeline.exec()
-    return jobs.map(j => j.id)
   }
 
   async dequeue(queue: string, count: number): Promise<DequeuedJob[]> {
@@ -985,6 +1057,7 @@ export class RedisBackendAdapter implements BackendAdapter {
       status: 'scheduled' as const,
       runAt,
     }
+    if (job.idempotencyKey) return this.enqueueIdempotent(scheduled)
 
     const hash = serializeJobToHash(scheduled)
     const pipeline = client.pipeline()

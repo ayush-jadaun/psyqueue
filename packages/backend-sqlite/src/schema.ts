@@ -41,6 +41,18 @@ CREATE INDEX IF NOT EXISTS idx_jobs_idempotency ON jobs (idempotency_key) WHERE 
 CREATE INDEX IF NOT EXISTS idx_jobs_workflow ON jobs (workflow_id) WHERE workflow_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status);
 
+-- Idempotency keys: one live job per (queue, name + key). Checked and claimed
+-- in the same transaction as the job insert.
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+  queue TEXT NOT NULL,
+  name TEXT NOT NULL,
+  key TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  PRIMARY KEY (queue, name, key)
+);
+CREATE INDEX IF NOT EXISTS idx_idempotency_expires ON idempotency_keys (expires_at);
+
 CREATE TABLE IF NOT EXISTS locks (
   key TEXT PRIMARY KEY,
   expires_at TEXT NOT NULL

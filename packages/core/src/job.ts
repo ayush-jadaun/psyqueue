@@ -18,6 +18,7 @@ export function createJob(name: string, payload: unknown, opts: EnqueueOpts = {}
     cron: opts.cron,
     tenantId: opts.tenantId,
     idempotencyKey: opts.idempotencyKey,
+    idempotencyTtl: opts.idempotencyTtl,
     maxRetries: opts.maxRetries ?? 3,
     attempt: 1,
     backoff: opts.backoff ?? 'exponential',

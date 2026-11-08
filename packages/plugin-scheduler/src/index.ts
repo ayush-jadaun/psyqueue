@@ -36,27 +36,9 @@ export function scheduler(opts: SchedulerOpts = {}): PsyPlugin {
     depends: ['backend'],
 
     init(kernel: Kernel): void {
-      // ------------------------------------------------------------------ //
-      // Enqueue middleware — transform phase                                //
-      // If a job has a future runAt, redirect to backend.scheduleAt()      //
-      // instead of the normal enqueue path.                                 //
-      // ------------------------------------------------------------------ //
-      kernel.pipeline(
-        'enqueue',
-        async (ctx, next) => {
-          const job = ctx.job
-          if (job.runAt) {
-            // Intercept ALL runAt jobs — route through scheduleAt().
-            // The poller will immediately pick up past-due ones.
-            const backend = kernel.getBackend()
-            await backend.scheduleAt(job, job.runAt)
-            // Do NOT call next() — this replaces the core enqueue execute step
-            return
-          }
-          await next()
-        },
-        { phase: 'transform' },
-      )
+      // Delayed jobs need no enqueue hook: createJob() marks a future runAt as
+      // 'scheduled' and every backend stores those in its scheduled set, so
+      // they get idempotency, events and other enqueue plugins like any job.
 
       // ------------------------------------------------------------------ //
       // job:completed event — schedule next cron occurrence                 //

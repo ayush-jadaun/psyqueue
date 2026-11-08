@@ -176,11 +176,14 @@ function nackQuery(jobId: string, opts?: NackOpts): { sql: string; params: unkno
   }
 }
 
+const DEFAULT_IDEMPOTENCY_TTL = 24 * 60 * 60 * 1000
+
 export class PostgresBackendAdapter implements BackendAdapter {
   readonly name = 'postgres'
   readonly type = 'postgres'
 
   private pool: Pool | null = null
+  private keyedInserts = 0
   private readonly opts: PostgresAdapterOpts
 
   constructor(opts: PostgresAdapterOpts = {}) {
@@ -223,9 +226,64 @@ export class PostgresBackendAdapter implements BackendAdapter {
   }
 
   async enqueue(job: Job): Promise<string> {
-    const pool = this.getPool()
-    const params = serializeJobParams(job)
-    await pool.query(INSERT_JOB_SQL, params)
+    if (!job.idempotencyKey) {
+      await this.getPool().query(INSERT_JOB_SQL, serializeJobParams(job))
+      return job.id
+    }
+    return this.withTransaction(client => this.insertJob(client, job))
+  }
+
+  private async withTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+    const client = await this.getPool().connect()
+    try {
+      await client.query('BEGIN')
+      const result = await fn(client)
+      await client.query('COMMIT')
+      return result
+    } catch (err) {
+      await client.query('ROLLBACK')
+      throw err
+    } finally {
+      client.release()
+    }
+  }
+
+  /**
+   * Insert a job; with an idempotency key, returns the live duplicate's id
+   * instead. Must run inside a transaction when a key is present.
+   */
+  private async insertJob(client: PoolClient, job: Job): Promise<string> {
+    if (job.idempotencyKey) {
+      const key = job.idempotencyKey
+      // Free the key if it expired or its job failed/died/was removed
+      await client.query(
+        `DELETE FROM psyqueue_idempotency_keys k
+         WHERE k.queue = $1 AND k.name = $3 AND k.key = $2 AND (
+           k.expires_at <= NOW()
+           OR NOT EXISTS (SELECT 1 FROM psyqueue_jobs j WHERE j.id = k.job_id AND j.status NOT IN ('failed', 'dead'))
+         )`,
+        [job.queue, key, job.name],
+      )
+      // A concurrent claimer blocks here until the other transaction finishes
+      const claimed = await client.query(
+        `INSERT INTO psyqueue_idempotency_keys (queue, name, key, job_id, expires_at)
+         VALUES ($1, $5, $2, $3, NOW() + ($4::double precision * INTERVAL '1 millisecond'))
+         ON CONFLICT DO NOTHING`,
+        [job.queue, key, job.id, job.idempotencyTtl ?? DEFAULT_IDEMPOTENCY_TTL, job.name],
+      )
+      if (claimed.rowCount === 0) {
+        const existing = await client.query<{ job_id: string }>(
+          'SELECT job_id FROM psyqueue_idempotency_keys WHERE queue = $1 AND name = $3 AND key = $2',
+          [job.queue, key, job.name],
+        )
+        return existing.rows[0]!.job_id
+      }
+      // ponytail: global purge every 100 keyed inserts bounds table growth
+      if (++this.keyedInserts % 100 === 0) {
+        await client.query('DELETE FROM psyqueue_idempotency_keys WHERE expires_at <= NOW()')
+      }
+    }
+    await client.query(INSERT_JOB_SQL, serializeJobParams(job))
     return job.id
   }
 
@@ -234,12 +292,10 @@ export class PostgresBackendAdapter implements BackendAdapter {
     const client = await pool.connect()
     try {
       await client.query('BEGIN')
-      for (const job of jobs) {
-        const params = serializeJobParams(job)
-        await client.query(INSERT_JOB_SQL, params)
-      }
+      const ids: string[] = []
+      for (const job of jobs) ids.push(await this.insertJob(client, job))
       await client.query('COMMIT')
-      return jobs.map(j => j.id)
+      return ids
     } catch (err) {
       await client.query('ROLLBACK')
       throw err
@@ -437,15 +493,7 @@ export class PostgresBackendAdapter implements BackendAdapter {
   }
 
   async scheduleAt(job: Job, runAt: Date): Promise<string> {
-    const pool = this.getPool()
-    const scheduled = {
-      ...job,
-      status: 'scheduled' as const,
-      runAt,
-    }
-    const params = serializeJobParams(scheduled)
-    await pool.query(INSERT_JOB_SQL, params)
-    return job.id
+    return this.enqueue({ ...job, status: 'scheduled', runAt })
   }
 
   async pollScheduled(now: Date, limit: number): Promise<Job[]> {
@@ -539,8 +587,7 @@ export class PostgresBackendAdapter implements BackendAdapter {
     for (const op of ops) {
       switch (op.type) {
         case 'enqueue': {
-          const params = serializeJobParams(op.job)
-          await client.query(INSERT_JOB_SQL, params)
+          await this.insertJob(client, op.job)
           break
         }
         case 'ack': {

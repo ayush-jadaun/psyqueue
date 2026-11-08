@@ -72,6 +72,21 @@ UPDATE jobs SET heartbeat_at = ?
 WHERE id = ? AND status = 'active' AND completion_token = ?
 `
 
+// Idempotency: free the key if it expired or its job failed/died/was removed,
+// then try to claim it. A failed claim means a live duplicate exists.
+export const IDEM_RELEASE = `
+DELETE FROM idempotency_keys
+WHERE queue = ? AND name = ? AND key = ? AND (
+  expires_at <= ?
+  OR NOT EXISTS (
+    SELECT 1 FROM jobs WHERE jobs.id = idempotency_keys.job_id AND jobs.status NOT IN ('failed', 'dead')
+  )
+)
+`
+export const IDEM_CLAIM = `INSERT OR IGNORE INTO idempotency_keys (queue, name, key, job_id, expires_at) VALUES (?, ?, ?, ?, ?)`
+export const IDEM_LOOKUP = `SELECT job_id FROM idempotency_keys WHERE queue = ? AND name = ? AND key = ?`
+export const IDEM_PURGE_EXPIRED = `DELETE FROM idempotency_keys WHERE expires_at <= ?`
+
 export const POLL_SCHEDULED = `
 SELECT id FROM jobs
 WHERE status = 'scheduled' AND run_at <= ?

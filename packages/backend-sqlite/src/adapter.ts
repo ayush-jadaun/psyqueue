@@ -25,6 +25,10 @@ import {
   NACK_REQUEUE,
   RECOVER_STALE,
   EXTEND_LEASE,
+  IDEM_RELEASE,
+  IDEM_CLAIM,
+  IDEM_LOOKUP,
+  IDEM_PURGE_EXPIRED,
   POLL_SCHEDULED,
   UPDATE_SCHEDULED_TO_PENDING,
   ACQUIRE_LOCK,
@@ -32,6 +36,8 @@ import {
   RELEASE_LOCK,
   buildListJobsQuery,
 } from './queries.js'
+
+const DEFAULT_IDEMPOTENCY_TTL = 24 * 60 * 60 * 1000
 
 export interface SQLiteAdapterOpts {
   path: string
@@ -160,6 +166,7 @@ export class SQLiteBackendAdapter implements BackendAdapter {
 
   private db: Database.Database | null = null
   private readonly opts: SQLiteAdapterOpts
+  private keyedInserts = 0
 
   constructor(opts: SQLiteAdapterOpts) {
     this.opts = opts
@@ -197,24 +204,34 @@ export class SQLiteBackendAdapter implements BackendAdapter {
 
   async enqueue(job: Job): Promise<string> {
     const db = this.getDb()
-    const params = serializeJob(job)
-    db.prepare(INSERT_JOB).run(params)
-    return job.id
+    return job.idempotencyKey ? db.transaction(() => this.insertJob(job))() : this.insertJob(job)
   }
 
   async enqueueBulk(jobs: Job[]): Promise<string[]> {
     const db = this.getDb()
-    const stmt = db.prepare(INSERT_JOB)
-    const insertAll = db.transaction((jobsToInsert: Job[]) => {
-      const ids: string[] = []
-      for (const job of jobsToInsert) {
-        const params = serializeJob(job)
-        stmt.run(params)
-        ids.push(job.id)
+    return db.transaction((list: Job[]) => list.map(job => this.insertJob(job)))(jobs)
+  }
+
+  /**
+   * Insert a job; with an idempotency key, returns the live duplicate's id
+   * instead. Callers run it inside a transaction when a key is present.
+   */
+  private insertJob(job: Job): string {
+    const db = this.getDb()
+    if (job.idempotencyKey) {
+      const key = job.idempotencyKey
+      const now = Date.now()
+      // ponytail: global purge every 100 keyed inserts; a per-key release below
+      // keeps correctness, this only bounds table growth.
+      if (++this.keyedInserts % 100 === 0) db.prepare(IDEM_PURGE_EXPIRED).run(now)
+      db.prepare(IDEM_RELEASE).run(job.queue, job.name, key, now)
+      const ttl = job.idempotencyTtl ?? DEFAULT_IDEMPOTENCY_TTL
+      if (db.prepare(IDEM_CLAIM).run(job.queue, job.name, key, job.id, now + ttl).changes === 0) {
+        return (db.prepare(IDEM_LOOKUP).get(job.queue, job.name, key) as { job_id: string }).job_id
       }
-      return ids
-    })
-    return insertAll(jobs)
+    }
+    db.prepare(INSERT_JOB).run(serializeJob(job))
+    return job.id
   }
 
   async dequeue(queue: string, count: number): Promise<DequeuedJob[]> {
@@ -319,15 +336,7 @@ export class SQLiteBackendAdapter implements BackendAdapter {
   }
 
   async scheduleAt(job: Job, runAt: Date): Promise<string> {
-    const db = this.getDb()
-    const scheduled = {
-      ...job,
-      status: 'scheduled' as const,
-      runAt,
-    }
-    const params = serializeJob(scheduled)
-    db.prepare(INSERT_JOB).run(params)
-    return job.id
+    return this.enqueue({ ...job, status: 'scheduled', runAt })
   }
 
   async pollScheduled(now: Date, limit: number): Promise<Job[]> {
@@ -379,8 +388,7 @@ export class SQLiteBackendAdapter implements BackendAdapter {
       for (const op of operations) {
         switch (op.type) {
           case 'enqueue': {
-            const params = serializeJob(op.job)
-            db.prepare(INSERT_JOB).run(params)
+            this.insertJob(op.job)
             break
           }
           case 'ack': {

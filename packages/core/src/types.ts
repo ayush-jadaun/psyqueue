@@ -28,7 +28,15 @@ export interface Job {
 
   tenantId?: string
 
+  /**
+   * Idempotency key. While a job with the same queue + name + key exists and
+   * hasn't failed or died, enqueue returns that job's id instead of creating
+   * a new one. Enforced atomically by the backend, so it holds across
+   * processes and restarts.
+   */
   idempotencyKey?: string
+  /** How long the idempotency key is held, in ms (default: 24h). */
+  idempotencyTtl?: number
   maxRetries: number
   attempt: number
   backoff: BackoffStrategy | BackoffFunction
@@ -64,7 +72,15 @@ export interface EnqueueOpts {
   deadline?: Date
   runAt?: Date
   cron?: string
+  /**
+   * Idempotency key. While a job with the same queue + name + key exists and
+   * hasn't failed or died, enqueue returns that job's id instead of creating
+   * a new one. Enforced atomically by the backend, so it holds across
+   * processes and restarts.
+   */
   idempotencyKey?: string
+  /** How long the idempotency key is held, in ms (default: 24h). */
+  idempotencyTtl?: number
   maxRetries?: number
   timeout?: number
   backoff?: BackoffStrategy | BackoffFunction
@@ -132,7 +148,14 @@ export interface BackendAdapter {
   disconnect(): Promise<void>
   healthCheck(): Promise<boolean>
 
+  /**
+   * Persist a job (status 'scheduled' jobs go to the scheduled set).
+   * Returns the job's id, or, if `job.idempotencyKey` matches a live job in
+   * the same queue with the same name, that existing job's id (nothing is
+   * inserted). The check and insert must be atomic.
+   */
   enqueue(job: Job): Promise<string>
+  /** Same contract as enqueue(), for many jobs; ids are returned in order. */
   enqueueBulk(jobs: Job[]): Promise<string[]>
   dequeue(queue: string, count: number): Promise<DequeuedJob[]>
   ack(jobId: string, completionToken?: string, resultJson?: string): Promise<AckResult>

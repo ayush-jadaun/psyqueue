@@ -196,9 +196,13 @@ setInterval(async () => {
 
 ---
 
-## Exactly-Once Delivery
+## Idempotent Enqueue (`exactly-once`)
 
-Deduplicates jobs using idempotency keys. Prevents duplicate processing when the same request is submitted multiple times.
+Deduplicates enqueues by idempotency key. While a job with the same **queue, job name and key** exists and hasn't failed or died, enqueueing it again returns the existing job's id instead of creating a new job.
+
+The check and the insert are a single atomic step in the backend (a key table in a transaction on SQLite/Postgres, a Lua script on Redis). So it holds **across processes and after restarts**, including for `enqueueBulk` and delayed jobs. This works in core without the plugin; the plugin sets the key lifetime and can reject duplicates.
+
+> **What it does not do:** it dedupes *enqueues*. Processing stays at-least-once, as in every job queue: a job that throws after a side effect is retried, and a job whose worker died runs again. Make handlers with side effects idempotent (e.g. pass the same key to your payment provider).
 
 ### Installation
 
@@ -214,21 +218,19 @@ import { exactlyOnce } from '@psyqueue/plugin-exactly-once'
 q.use(exactlyOnce({
   window: '24h',
   onDuplicate: 'ignore',
-  cleanupInterval: '1h',
 }))
 ```
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `window` | `string` | `'24h'` | Dedup window. Formats: `'500ms'`, `'30s'`, `'5m'`, `'1h'`, `'7d'` |
-| `onDuplicate` | `'ignore' \| 'reject'` | `'ignore'` | Action when duplicate detected |
-| `cleanupInterval` | `string` | `'1h'` | How often to prune expired dedup keys |
+| `window` | `string` | `'24h'` | How long a key is held. Formats: `'500ms'`, `'30s'`, `'5m'`, `'1h'`, `'7d'` |
+| `onDuplicate` | `'ignore' \| 'reject'` | `'ignore'` | Return the existing id, or throw `DuplicateJobError` |
+
+Without the plugin, keys are held for 24h, or per job via `idempotencyTtl` (ms).
 
 **Depends on:** `backend`
 
 ### Usage
-
-Add an `idempotencyKey` when enqueuing:
 
 ```typescript
 // First call: job is created
@@ -236,14 +238,20 @@ const id1 = await q.enqueue('payment.charge', { amount: 4999 }, {
   idempotencyKey: 'order-789-charge',
 })
 
-// Second call with same key within window:
+// Same key again (from any process, even after a restart):
 const id2 = await q.enqueue('payment.charge', { amount: 4999 }, {
   idempotencyKey: 'order-789-charge',
 })
-
-// With 'ignore' mode: id2 === id1 (returns original job ID, no new job created)
-// With 'reject' mode: throws DuplicateJobError
+// 'ignore' mode: id2 === id1, no new job
+// 'reject' mode: throws DuplicateJobError
 ```
+
+### When a key becomes free again
+
+- The window (`window` / `idempotencyTtl`) has passed, or
+- the job holding it ended as `failed` or `dead`, so a retry of a failed operation is allowed.
+
+Keys are scoped to queue + job name: `email.send` and `sms.send` can both use key `'42'`. A duplicate does not emit `job:enqueued`.
 
 ### Duplicate Handling Modes
 
@@ -263,16 +271,6 @@ try {
   }
 }
 ```
-
-### Window Duration Formats
-
-| Format | Example | Duration |
-|--------|---------|----------|
-| Milliseconds | `'500ms'` | 500ms |
-| Seconds | `'30s'` | 30 seconds |
-| Minutes | `'5m'` | 5 minutes |
-| Hours | `'24h'` | 24 hours |
-| Days | `'7d'` | 7 days |
 
 ---
 

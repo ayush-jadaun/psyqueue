@@ -196,9 +196,15 @@ export class PsyQueue {
       // supply how (single insert vs. collect for one bulk insert). Plugins that
       // short-circuit (workflow start, job fusion, dedup) never reach this.
       this.middlewarePipeline.add('enqueue', async (c, next) => {
-        const persist = c.state['_persist'] as (job: Job) => Promise<void>
-        await persist(c.job)
-        c.state['_persisted'] = true
+        const persist = c.state['_persist'] as (job: Job) => Promise<string | void>
+        const id = await persist(c.job)
+        if (id && id !== c.job.id) {
+          // Idempotency key matched a live job: nothing was inserted
+          c.state['_duplicateOf'] = id
+          c.job.id = id
+        } else {
+          c.state['_persisted'] = true
+        }
         await next()
       }, { phase: 'execute', pluginName: '__core__' })
     }
@@ -228,7 +234,7 @@ export class PsyQueue {
   async enqueue(name: string, payload: unknown, opts?: EnqueueOpts): Promise<string> {
     const backend = this.getBackend()
     const job = createJob(name, payload, opts)
-    const ctx = await this.runEnqueuePipeline(job, async (j) => { await backend.enqueue(j) })
+    const ctx = await this.runEnqueuePipeline(job, (j) => backend.enqueue(j))
     if (ctx.state['_persisted']) {
       this.eventBus.emit('job:enqueued', { jobId: job.id, queue: job.queue, name: job.name })
     }
@@ -239,8 +245,8 @@ export class PsyQueue {
    * Enqueue many jobs. Each job goes through the enqueue pipeline (so rate
    * limits, dedup and other plugins apply), then all jobs that reach the
    * persist step are written in one atomic backend call.
-   * Returns one id per item, in order (a plugin may substitute an id, e.g.
-   * the id of an existing duplicate).
+   * Returns one id per item, in order; a duplicate (idempotency key) returns
+   * the existing job's id.
    */
   async enqueueBulk(items: Array<{ name: string; payload: unknown; opts?: EnqueueOpts }>): Promise<string[]> {
     const backend = this.getBackend()
@@ -249,16 +255,23 @@ export class PsyQueue {
     for (const item of items) {
       const job = createJob(item.name, item.payload, item.opts)
       jobs.push(job)
-      await this.runEnqueuePipeline(job, async (j) => { batch.push(j) })
+      // Keyed jobs are written immediately so duplicates are detected in-pipeline
+      const ctx = await this.runEnqueuePipeline(job, async (j) => {
+        if (j.idempotencyKey) return backend.enqueue(j)
+        batch.push(j)
+      })
+      if (job.idempotencyKey && ctx.state['_persisted']) this.emitEnqueued(job)
     }
     if (batch.length > 0) await backend.enqueueBulk(batch)
-    for (const job of batch) {
-      this.eventBus.emit('job:enqueued', { jobId: job.id, queue: job.queue, name: job.name })
-    }
+    for (const job of batch) this.emitEnqueued(job)
     return jobs.map(j => j.id)
   }
 
-  private async runEnqueuePipeline(job: Job, persist: (job: Job) => Promise<void>): Promise<JobContext> {
+  private emitEnqueued(job: Job): void {
+    this.eventBus.emit('job:enqueued', { jobId: job.id, queue: job.queue, name: job.name })
+  }
+
+  private async runEnqueuePipeline(job: Job, persist: (job: Job) => Promise<string | void>): Promise<JobContext> {
     const backend = this.getBackend()
     const ctx = createContext(job, 'enqueue', {
       enqueue: (n, p, o) => this.enqueue(n, p, o),

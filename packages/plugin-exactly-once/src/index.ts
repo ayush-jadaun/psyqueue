@@ -1,15 +1,12 @@
 import type { PsyPlugin, Kernel } from '@psyqueue/core'
 import { DuplicateJobError } from '@psyqueue/core'
-import { DedupStore } from './dedup.js'
-
-export type { DedupStore }
 
 export interface ExactlyOnceOpts {
-  /** Dedup window, e.g. '24h', '1h', '5m', '30s', '500ms'. Default: '24h' */
+  /** How long an idempotency key is held, e.g. '24h', '1h', '5m', '30s', '500ms'. Default: '24h' */
   window?: string
   /** What to do when a duplicate is detected. Default: 'ignore' */
   onDuplicate?: 'ignore' | 'reject'
-  /** How often to prune expired keys. Default: '1h' */
+  /** @deprecated No effect. Keys are stored and expired by the backend. */
   cleanupInterval?: string
 }
 
@@ -47,84 +44,44 @@ export function parseWindow(input: string): number {
 }
 
 /**
- * Creates the exactly-once plugin which provides idempotency key deduplication.
+ * Idempotent enqueue.
  *
- * When a job is enqueued with an `idempotencyKey`, the plugin checks whether
- * a job with the same key was already enqueued within the dedup window:
- *   - 'ignore' (default): returns the original jobId without creating a new job
- *   - 'reject': throws a DuplicateJobError
+ * Deduplication itself is done by the backend, atomically with the insert, so
+ * it holds across processes and restarts: while a job with the same queue,
+ * name and `idempotencyKey` exists and hasn't failed or died, enqueue returns
+ * that job's id. This plugin sets the key's lifetime (`window`) and can turn
+ * duplicates into a `DuplicateJobError` (`onDuplicate: 'reject'`).
  *
- * Jobs without an `idempotencyKey` are not affected.
+ * Processing stays at-least-once (a retried or reclaimed job runs again), so
+ * handlers with side effects should still be idempotent.
  */
 export function exactlyOnce(opts: ExactlyOnceOpts = {}): PsyPlugin {
   const windowMs = parseWindow(opts.window ?? '24h')
   const onDuplicate = opts.onDuplicate ?? 'ignore'
-  const cleanupIntervalMs = parseWindow(opts.cleanupInterval ?? '1h')
 
-  const store = new DedupStore()
-  let cleanupTimer: ReturnType<typeof setInterval> | null = null
-
-  const plugin: PsyPlugin = {
+  return {
     name: 'exactly-once',
     version: '0.1.0',
     provides: 'exactly-once',
     depends: ['backend'],
 
     init(kernel: Kernel): void {
-      // Guard phase — runs before the core execute phase (which persists the job)
       kernel.pipeline(
         'enqueue',
         async (ctx, next) => {
           const key = ctx.job.idempotencyKey
-          if (!key) {
-            // No idempotency key — pass through normally
-            await next()
-            return
-          }
+          if (!key) return next()
 
-          const existingJobId = store.check(key)
-          if (existingJobId !== null) {
-            // Duplicate detected
-            if (onDuplicate === 'reject') {
-              throw new DuplicateJobError(key, existingJobId)
-            }
-            // 'ignore' mode: mutate ctx.job.id so the caller gets back the
-            // original jobId. Do NOT call next() so the job is not persisted.
-            ctx.job.id = existingJobId
-            return
-          }
+          ctx.job.idempotencyTtl ??= windowMs
+          await next()
 
-          // Not a duplicate — reserve the key first to prevent concurrent races,
-          // then enqueue normally, then update with the real jobId
-          const placeholderId = ctx.job.id // pre-generated ULID
-          store.store(key, placeholderId, windowMs)
-          try {
-            await next()
-            // Update with the actual persisted jobId (may differ if backend changes it)
-            store.store(key, ctx.job.id, windowMs)
-          } catch (err) {
-            // Enqueue failed — remove the reservation
-            store.remove(key)
-            throw err
+          const existingJobId = ctx.state['_duplicateOf'] as string | undefined
+          if (existingJobId && onDuplicate === 'reject') {
+            throw new DuplicateJobError(key, existingJobId)
           }
         },
         { phase: 'guard' },
       )
     },
-
-    async start(): Promise<void> {
-      cleanupTimer = setInterval(() => {
-        store.cleanup()
-      }, cleanupIntervalMs)
-    },
-
-    async stop(): Promise<void> {
-      if (cleanupTimer !== null) {
-        clearInterval(cleanupTimer)
-        cleanupTimer = null
-      }
-    },
   }
-
-  return plugin
 }

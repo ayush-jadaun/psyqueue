@@ -57,6 +57,18 @@ CREATE INDEX IF NOT EXISTS idx_psyqueue_jobs_status
 -- Lease heartbeat (added after initial release; ADD COLUMN IF NOT EXISTS migrates old DBs)
 ALTER TABLE psyqueue_jobs ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMPTZ;
 
+-- Idempotency keys: one live job per (queue, name + key). Checked and claimed
+-- in the same transaction as the job insert.
+CREATE TABLE IF NOT EXISTS psyqueue_idempotency_keys (
+  queue TEXT NOT NULL,
+  name TEXT NOT NULL,
+  key TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (queue, name, key)
+);
+CREATE INDEX IF NOT EXISTS idx_psyqueue_idempotency_expires ON psyqueue_idempotency_keys (expires_at);
+
 CREATE TABLE IF NOT EXISTS psyqueue_locks (
   key TEXT PRIMARY KEY,
   expires_at TIMESTAMPTZ NOT NULL,
