@@ -39,6 +39,8 @@ export function serializeJobToHash(job: Job): JobHash {
     attempt: String(job.attempt),
     max_retries: String(job.maxRetries),
     completion_token: '',
+    // Top-level copy for Lua (fair scheduling); the _ext copy is still read back
+    tenant_id: job.tenantId ?? '',
     created_at: job.createdAt.toISOString(),
     started_at: job.startedAt ? job.startedAt.toISOString() : '',
     completed_at: job.completedAt ? job.completedAt.toISOString() : '',
@@ -161,6 +163,157 @@ export function computePendingScore(priority: number, createdAt: Date): number {
 
 // ─── Lua Scripts ──────────────────────────────────────────────────────────────
 
+// Fair (per-tenant) scheduling helpers, prepended to every script that makes a
+// job ready or takes it out of 'active'. A queue is fair when <prefix><queue>:fair
+// exists. In a fair queue, tenant jobs wait in per-tenant lists
+// (<prefix><queue>:t:<tenant>) and tenants are ordered by virtual time in the
+// <prefix><queue>:tq sorted set; jobs without a tenant use the normal ready list.
+const LUA_FAIR_HELPERS = `
+local function psy_wake(prefix, queue)
+  local wake = prefix .. queue .. ':wake'
+  redis.call('LPUSH', wake, '1')
+  redis.call('LTRIM', wake, 0, 0)
+end
+
+local function psy_push_ready(prefix, queue, job_id, hash_key)
+  if redis.call('EXISTS', prefix .. queue .. ':fair') == 0 then
+    redis.call('RPUSH', prefix .. queue .. ':ready', job_id)
+    return
+  end
+  local tenant = redis.call('HGET', hash_key, 'tenant_id') or ''
+  if tenant == '' then
+    redis.call('RPUSH', prefix .. queue .. ':ready', job_id)
+  else
+    local tq = prefix .. queue .. ':tq'
+    redis.call('RPUSH', prefix .. queue .. ':t:' .. tenant, job_id)
+    if not redis.call('ZSCORE', tq, tenant) then
+      -- A tenant (re)joining starts at the current minimum virtual time
+      local m = redis.call('ZRANGE', tq, 0, 0, 'WITHSCORES')
+      redis.call('ZADD', tq, m[2] or 0, tenant)
+    end
+  end
+  psy_wake(prefix, queue)
+end
+
+local function psy_release_tenant(prefix, queue, hash_key)
+  local tenant = redis.call('HGET', hash_key, '_fair_tenant')
+  if tenant then
+    redis.call('HINCRBY', prefix .. queue .. ':tactive', tenant, -1)
+    redis.call('HDEL', hash_key, '_fair_tenant')
+    psy_wake(prefix, queue)
+  end
+end
+`
+
+// Fair dequeue: weighted fair queuing across tenants with per-tenant
+// concurrency limits. Each pick takes the next job of the eligible tenant with
+// the lowest virtual time, then advances that tenant's time by 1/weight.
+// Tenant policy (<prefix>tenant_policy hash): "<weight>|<maxActive or empty>".
+// ponytail: O(tenants) per pick; fine for hundreds of active tenants, use a
+// sharded scheduler if a queue has tens of thousands with pending work.
+// KEYS: 1 tq, 2 ready, 3 priority, 4 active set, 5 tactive, 6 policy, 7 hash prefix, 8 tenant list prefix
+// ARGV: 1 count, 2 started_at
+// Returns: [id, token, jsonEncodedHashData, ...] triplets
+export const FAIR_DEQUEUE_SCRIPT = `
+local tq, ready_key, priority_key, active_key = KEYS[1], KEYS[2], KEYS[3], KEYS[4]
+local tactive, policy, hash_prefix, tlist_prefix = KEYS[5], KEYS[6], KEYS[7], KEYS[8]
+local count = tonumber(ARGV[1])
+local started_at = ARGV[2]
+local time = redis.call('TIME')
+local now_ms = tostring(tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000))
+
+local function bucket_size(t)
+  if t == '' then return redis.call('LLEN', ready_key) + redis.call('ZCARD', priority_key) end
+  return redis.call('LLEN', tlist_prefix .. t)
+end
+
+-- Jobs without a tenant form one more bucket, ''
+if not redis.call('ZSCORE', tq, '') and bucket_size('') > 0 then
+  local m = redis.call('ZRANGE', tq, 0, 0, 'WITHSCORES')
+  redis.call('ZADD', tq, m[2] or 0, '')
+end
+
+local results = {}
+for n = 1, count do
+  local entries = redis.call('ZRANGE', tq, 0, -1, 'WITHSCORES')
+  local pick_t, pick_id, pick_vt, pick_w
+  for i = 1, #entries, 2 do
+    local t = entries[i]
+    local vt = tonumber(entries[i + 1])
+    local w, max_active = 1, nil
+    local pol = redis.call('HGET', policy, t)
+    if pol then
+      local sep = string.find(pol, '|', 1, true)
+      w = tonumber(string.sub(pol, 1, sep - 1)) or 1
+      max_active = tonumber(string.sub(pol, sep + 1))
+    end
+    local act = tonumber(redis.call('HGET', tactive, t) or '0')
+    if not max_active or act < max_active then
+      local id
+      if t == '' then
+        local p = redis.call('ZPOPMIN', priority_key, 1)
+        id = p[1] or redis.call('LPOP', ready_key)
+      else
+        id = redis.call('LPOP', tlist_prefix .. t)
+      end
+      if id then
+        pick_t, pick_id, pick_vt, pick_w = t, id, vt, w
+        break
+      end
+      redis.call('ZREM', tq, t) -- empty bucket
+    end
+  end
+  if not pick_id then break end
+
+  if bucket_size(pick_t) == 0 then
+    redis.call('ZREM', tq, pick_t)
+  else
+    redis.call('ZADD', tq, pick_vt + 1 / pick_w, pick_t)
+  end
+
+  local hash_key = hash_prefix .. pick_id
+  if redis.call('EXISTS', hash_key) == 1 then
+    local token = pick_id .. ':' .. time[1] .. time[2]
+    redis.call('HINCRBY', tactive, pick_t, 1)
+    redis.call('SADD', active_key, pick_id)
+    redis.call('HSET', hash_key, 'status', 'active', 'started_at', started_at, 'completion_token', token,
+      '_started_ms', now_ms, '_fair_tenant', pick_t)
+    table.insert(results, pick_id)
+    table.insert(results, token)
+    table.insert(results, cjson.encode(redis.call('HGETALL', hash_key)))
+  end
+end
+return results
+`
+
+// Fair enqueue: store the job and make it ready in its tenant's list.
+// KEYS: 1 job hash, 2 key prefix, 3 queue name; ARGV: 1 job id, 2.. hash field/value pairs
+export const FAIR_ENQUEUE_SCRIPT = LUA_FAIR_HELPERS + `
+local fields = {}
+for i = 2, #ARGV do fields[#fields + 1] = ARGV[i] end
+redis.call('HSET', KEYS[1], unpack(fields))
+psy_push_ready(KEYS[2], KEYS[3], ARGV[1], KEYS[1])
+return ARGV[1]
+`
+
+// Sliding-window rate limit (log of timestamps in a sorted set).
+// KEYS[1] = rate key; ARGV: 1 max, 2 window ms, 3 unique member
+// Returns {1, 0} if allowed (and recorded), or {0, retryAfterMs}
+export const RATE_LIMIT_SCRIPT = `
+local t = redis.call('TIME')
+local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+local max = tonumber(ARGV[1])
+local window = tonumber(ARGV[2])
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now - window)
+if redis.call('ZCARD', KEYS[1]) < max then
+  redis.call('ZADD', KEYS[1], now, ARGV[3])
+  redis.call('PEXPIRE', KEYS[1], window)
+  return {1, 0}
+end
+local oldest = redis.call('ZRANGE', KEYS[1], 0, 0, 'WITHSCORES')
+return {0, math.max(1, tonumber(oldest[2]) + window - now)}
+`
+
 // Dequeue Lua: check priority sorted set FIRST, then LPOP from ready list for remaining
 // KEYS[1] = ready list key
 // KEYS[2] = active sorted set key
@@ -248,7 +401,7 @@ return cjson.encode(redis.call('HGETALL', hash_key))
 // Single-call ack script: reads queue from hash, verifies token, moves to completed
 // KEYS[1] = hash key, KEYS[2] = key prefix (e.g. 'psyqueue:')
 // ARGV[1] = token, ARGV[2] = completed_at, ARGV[3] = jobId, ARGV[4] = result json (optional)
-export const ACK_SCRIPT = `
+export const ACK_SCRIPT = LUA_FAIR_HELPERS + `
 local hash_key = KEYS[1]
 local prefix = KEYS[2]
 local token = ARGV[1]
@@ -265,6 +418,7 @@ local queue = redis.call('HGET', hash_key, 'queue')
 if not queue then return 0 end
 
 redis.call('SREM', prefix .. queue .. ':active', job_id)
+psy_release_tenant(prefix, queue, hash_key)
 if result_arg ~= '' then
   redis.call('HSET', hash_key, 'status', 'completed', 'completed_at', completed_at, 'result', result_arg)
 else
@@ -295,7 +449,7 @@ return 1
 // ARGV[3] = current job id
 // ARGV[4] = result json (optional)
 // Returns: [1, nextJobId, nextToken, nextJobDataJson] or [1] if no next job, or [0] if ack failed
-export const ACK_AND_FETCH_SCRIPT = `
+export const ACK_AND_FETCH_SCRIPT = LUA_FAIR_HELPERS + `
 local hash_key = KEYS[1]
 local prefix = KEYS[2]
 local ready_key = KEYS[3]
@@ -317,6 +471,7 @@ local queue = redis.call('HGET', hash_key, 'queue')
 if not queue then return {0} end
 
 redis.call('SREM', active_set, job_id)
+psy_release_tenant(prefix, queue, hash_key)
 if result_arg ~= '' then
   redis.call('HSET', hash_key, 'status', 'completed', 'completed_at', completed_at, 'result', result_arg)
 else
@@ -367,7 +522,7 @@ return {1, next_id, next_token, cjson.encode(data)}
 // KEYS[1] = hash key, KEYS[2] = key prefix
 // ARGV[1] = jobId, ARGV[2] = mode (requeue|dead|fail), ARGV[3] = error json
 // ARGV[4] = delay ms, ARGV[5] = now ms, ARGV[6] = completion token ('' = unguarded)
-export const NACK_SCRIPT = `
+export const NACK_SCRIPT = LUA_FAIR_HELPERS + `
 local hash_key = KEYS[1]
 local prefix = KEYS[2]
 local job_id = ARGV[1]
@@ -387,6 +542,7 @@ if token ~= '' then
 end
 
 redis.call('SREM', prefix .. queue .. ':active', job_id)
+psy_release_tenant(prefix, queue, hash_key)
 
 if mode == 'dead' then
   redis.call('HSET', hash_key, 'status', 'dead', 'error', error_json)
@@ -432,7 +588,7 @@ if priority > 0 then
   local score = (-priority * 10000000000000) + now_ms
   redis.call('ZADD', prefix .. queue .. ':priority', score, job_id)
 else
-  redis.call('RPUSH', prefix .. queue .. ':ready', job_id)
+  psy_push_ready(prefix, queue, job_id, hash_key)
 end
 return 1
 `
@@ -458,7 +614,7 @@ return 1
 // ARGV[1] = job id, ARGV[2] = ttl ms, ARGV[3] = 'list' | 'zset', ARGV[4] = zset score,
 // ARGV[5..] = job hash field/value pairs
 // Returns the id of the job that holds the key (ARGV[1] if newly inserted)
-export const ENQUEUE_IDEMPOTENT_SCRIPT = `
+export const ENQUEUE_IDEMPOTENT_SCRIPT = LUA_FAIR_HELPERS + `
 local existing = redis.call('GET', KEYS[1])
 if existing then
   local status = redis.call('HGET', KEYS[4] .. existing, 'status')
@@ -471,7 +627,7 @@ local fields = {}
 for i = 5, #ARGV do fields[#fields + 1] = ARGV[i] end
 redis.call('HSET', KEYS[2], unpack(fields))
 if ARGV[3] == 'list' then
-  redis.call('RPUSH', KEYS[3], ARGV[1])
+  psy_push_ready(KEYS[5], KEYS[6], ARGV[1], KEYS[2])
 else
   redis.call('ZADD', KEYS[3], ARGV[4], ARGV[1])
 end
@@ -488,7 +644,7 @@ const DEFAULT_IDEMPOTENCY_TTL = 24 * 60 * 60 * 1000
 // ARGV[1] = current timestamp (ms)
 // ARGV[2] = limit
 // Returns: array of job ids moved
-export const POLL_SCHEDULED_SCRIPT = `
+export const POLL_SCHEDULED_SCRIPT = LUA_FAIR_HELPERS + `
 local scheduled_key = KEYS[1]
 local hash_prefix = KEYS[2]
 local prefix = KEYS[3]
@@ -514,7 +670,7 @@ for _, id in ipairs(ids) do
     local pkey = prefix .. queue .. ':priority'
     redis.call('ZADD', pkey, score, id)
   else
-    redis.call('RPUSH', ready_key, id)
+    psy_push_ready(prefix, queue, id, hash_key)
   end
 end
 return ids
@@ -571,11 +727,13 @@ return 1
 // KEYS[4] = priority sorted set key
 // ARGV[1] = max age in ms (jobs older than this are considered stale)
 // Returns: array of recovered job IDs
-export const RECOVER_STALE_SCRIPT = `
+export const RECOVER_STALE_SCRIPT = LUA_FAIR_HELPERS + `
 local active_key = KEYS[1]
 local hash_prefix = KEYS[2]
 local ready_key = KEYS[3]
 local priority_key = KEYS[4]
+local prefix = KEYS[5]
+local queue = ARGV[2]
 local max_age_ms = tonumber(ARGV[1])
 -- Use Redis's clock (same one that stamps _started_ms), not the caller's
 local t = redis.call('TIME')
@@ -605,13 +763,14 @@ for _, job_id in ipairs(members) do
         if started_ms < cutoff_ms then
           -- This job is stale — move back to pending
           redis.call('SREM', active_key, job_id)
+          psy_release_tenant(prefix, queue, hash_key)
           local priority = tonumber(redis.call('HGET', hash_key, 'priority') or '0')
           redis.call('HSET', hash_key, 'status', 'pending', 'started_at', '', '_started_ms', '', 'completion_token', '')
           if priority > 0 then
             local score = (-priority * 10000000000000) + now_ms
             redis.call('ZADD', priority_key, score, job_id)
           else
-            redis.call('RPUSH', ready_key, job_id)
+            psy_push_ready(prefix, queue, job_id, hash_key)
           end
           table.insert(recovered, job_id)
         end
@@ -635,6 +794,8 @@ export class RedisBackendAdapter implements BackendAdapter {
    */
   private blockingClient: Promise<any> | null = null
   private readonly opts: RedisAdapterOpts
+  /** Queues that use fair per-tenant scheduling (see enableFairQueue) */
+  private readonly fairQueues = new Set<string>()
   private readonly prefix: string
 
   constructor(opts: RedisAdapterOpts = {}) {
@@ -749,6 +910,13 @@ export class RedisBackendAdapter implements BackendAdapter {
       return job.id
     }
 
+    if (this.isFairTenantJob(job)) {
+      // ponytail: priority is ignored between a tenant's own jobs in fair queues
+      await client.eval(FAIR_ENQUEUE_SCRIPT, 3, this.jobKey(job.id), this.keyPrefix(), job.queue,
+        job.id, ...Object.entries(hash).flat())
+      return job.id
+    }
+
     if (job.priority > 0) {
       // Priority path: HSET + ZADD to priority sorted set (dequeue handles ordering)
       const score = computePendingScore(job.priority, job.createdAt)
@@ -788,11 +956,13 @@ export class RedisBackendAdapter implements BackendAdapter {
     const fields = Object.entries(serializeJobToHash(job)).flat()
     return await this.getClient().eval(
       ENQUEUE_IDEMPOTENT_SCRIPT,
-      4,
+      6,
       `${this.prefix}:idem:${job.queue}:${job.name}:${job.idempotencyKey}`,
       this.jobKey(job.id),
       target,
       this.jobHashPrefix(),
+      this.keyPrefix(),
+      job.queue,
       job.id,
       String(job.idempotencyTtl ?? DEFAULT_IDEMPOTENCY_TTL),
       mode,
@@ -807,7 +977,7 @@ export class RedisBackendAdapter implements BackendAdapter {
     const plain: Job[] = []
     for (let i = 0; i < jobs.length; i++) {
       const job = jobs[i]!
-      if (job.idempotencyKey || job.status !== 'pending') ids[i] = await this.enqueue(job)
+      if (job.idempotencyKey || job.status !== 'pending' || this.isFairTenantJob(job)) ids[i] = await this.enqueue(job)
       else plain.push(job)
     }
     if (plain.length > 0) await this.enqueuePlainBatch(plain)
@@ -860,16 +1030,31 @@ export class RedisBackendAdapter implements BackendAdapter {
     const startedAt = new Date().toISOString()
 
     // Single Lua call: check priority sorted set first, then LPOP from ready list
-    const results = await client.eval(
-      DEQUEUE_SCRIPT,
-      4,
-      this.readyKey(queue),
-      this.activeKey(queue),
-      this.jobHashPrefix(),
-      this.priorityKey(queue),
-      String(count),
-      startedAt,
-    ) as string[] | null
+    const results = (this.fairQueues.has(queue)
+      ? await client.eval(
+        FAIR_DEQUEUE_SCRIPT,
+        8,
+        `${this.keyPrefix()}${queue}:tq`,
+        this.readyKey(queue),
+        this.priorityKey(queue),
+        this.activeKey(queue),
+        `${this.keyPrefix()}${queue}:tactive`,
+        `${this.keyPrefix()}tenant_policy`,
+        this.jobHashPrefix(),
+        `${this.keyPrefix()}${queue}:t:`,
+        String(count),
+        startedAt,
+      )
+      : await client.eval(
+        DEQUEUE_SCRIPT,
+        4,
+        this.readyKey(queue),
+        this.activeKey(queue),
+        this.jobHashPrefix(),
+        this.priorityKey(queue),
+        String(count),
+        startedAt,
+      )) as string[] | null
 
     if (!results || results.length === 0) return []
 
@@ -915,6 +1100,10 @@ export class RedisBackendAdapter implements BackendAdapter {
   }
 
   async ackAndFetch(jobId: string, completionToken: string | undefined, queue: string, resultJson?: string): Promise<{ ackResult: AckResult; nextJob: DequeuedJob | null }> {
+    // Fair queues pick the next job through the fair scheduler, not the fused fetch
+    if (this.fairQueues.has(queue)) {
+      return { ackResult: await this.ack(jobId, completionToken, resultJson), nextJob: null }
+    }
     const client = this.getClient()
     const completedAt = new Date().toISOString()
 
@@ -1156,6 +1345,35 @@ export class RedisBackendAdapter implements BackendAdapter {
     }
   }
 
+  /**
+   * Make `queue` schedule fairly across tenants (weighted, with per-tenant
+   * concurrency limits from setTenantPolicies). Every process that enqueues to
+   * or consumes from the queue must call this (the tenancy plugin does).
+   */
+  async enableFairQueue(queue: string): Promise<void> {
+    this.fairQueues.add(queue)
+    await this.getClient().set(`${this.keyPrefix()}${queue}:fair`, '1')
+  }
+
+  async setTenantPolicies(policies: Record<string, { weight: number; maxActive?: number }>): Promise<void> {
+    const entries = Object.entries(policies)
+    if (entries.length === 0) return
+    await this.getClient().hset(`${this.keyPrefix()}tenant_policy`,
+      ...entries.flatMap(([tenant, p]) => [tenant, `${p.weight}|${p.maxActive ?? ''}`]))
+  }
+
+  async consumeRateLimit(key: string, max: number, windowMs: number): Promise<{ allowed: boolean; retryAfterMs: number }> {
+    const [allowed, retryAfterMs] = await this.getClient().eval(
+      RATE_LIMIT_SCRIPT, 1, `${this.keyPrefix()}rate:${key}`,
+      String(max), String(windowMs), `${Date.now()}:${Math.random().toString(36).slice(2)}`,
+    ) as [number, number]
+    return { allowed: allowed === 1, retryAfterMs }
+  }
+
+  private isFairTenantJob(job: Job): boolean {
+    return this.fairQueues.has(job.queue) && !!job.tenantId
+  }
+
   /** Drop the blocking connection: a pending BLMOVE rejects, and its caller gets []. */
   interruptBlocking(): void {
     if (!this.blockingClient) return
@@ -1175,6 +1393,17 @@ export class RedisBackendAdapter implements BackendAdapter {
     const commandClient = this.getClient()
 
     const timeoutSec = Math.max(1, Math.ceil(timeoutMs / 1000))
+
+    if (this.fairQueues.has(queue)) {
+      const ready = await this.dequeue(queue, 1)
+      if (ready.length > 0) return ready
+      try {
+        await blockingClient.blpop(`${this.keyPrefix()}${queue}:wake`, timeoutSec)
+      } catch {
+        return []
+      }
+      return this.dequeue(queue, 1)
+    }
 
     let jobId: string | null = null
     try {
@@ -1256,12 +1485,14 @@ export class RedisBackendAdapter implements BackendAdapter {
 
     const recovered = await client.eval(
       RECOVER_STALE_SCRIPT,
-      4,
+      5,
       this.activeKey(queue),
       this.jobHashPrefix(),
       this.readyKey(queue),
       this.priorityKey(queue),
+      this.keyPrefix(),
       String(maxAgeMs),
+      queue,
     ) as string[]
 
     return recovered ?? []

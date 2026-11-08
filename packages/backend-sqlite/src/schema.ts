@@ -53,6 +53,18 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
 );
 CREATE INDEX IF NOT EXISTS idx_idempotency_expires ON idempotency_keys (expires_at);
 
+-- Multi-tenancy: scheduling policy per tenant, and a sliding-window rate log
+CREATE TABLE IF NOT EXISTS tenant_policies (
+  tenant_id TEXT PRIMARY KEY,
+  weight REAL NOT NULL DEFAULT 1,
+  max_active INTEGER
+);
+CREATE TABLE IF NOT EXISTS rate_events (
+  key TEXT NOT NULL,
+  ts INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rate_events ON rate_events (key, ts);
+
 CREATE TABLE IF NOT EXISTS locks (
   key TEXT PRIMARY KEY,
   expires_at TEXT NOT NULL

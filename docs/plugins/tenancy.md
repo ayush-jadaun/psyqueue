@@ -37,10 +37,20 @@ q.use(tenancy({
     return tenant.plan // 'free', 'pro', or 'enterprise'
   },
   scheduling: 'weighted-fair-queue',
+  queues: ['reports', 'emails'],   // fair scheduling + tier concurrency for these queues
+  defaultTier: 'free',             // used when resolveTier fails or returns an unknown tier
 }))
 ```
 
-**Depends on:** `backend`
+**Depends on:** `backend` (SQLite, Postgres or Redis)
+
+### Guarantees
+
+Everything is enforced **by the backend**, so it holds across all your processes, not just one:
+
+- **Rate limits** are an atomic sliding-window log per tenant (not a per-process counter). Three API servers share one limit, `enqueueBulk` is counted too, and changing a tenant's tier doesn't reset what they've used.
+- **Fair scheduling**: in the `queues` you list, the backend's dequeue picks the next job by weighted fair queuing over tenants: a job's turn is `(tenant's running jobs + its place in the tenant's backlog) / tier weight`. A VIP job doesn't wait behind a noisy tenant's 10,000-job backlog.
+- **Tier concurrency**: in those queues, a tenant never has more than its tier's `concurrency` jobs running at once (counted per queue, across all workers).
 
 ### Options
 
@@ -48,7 +58,10 @@ q.use(tenancy({
 |--------|------|-------------|
 | `tiers` | `Record<string, TierConfig>` | Tier definitions (see below) |
 | `resolveTier` | `(tenantId: string) => Promise<string>` | Async function that resolves a tenant ID to a tier name |
-| `scheduling` | `SchedulingMode` | Fair scheduling algorithm |
+| `scheduling` | `SchedulingMode` | `'weighted-fair-queue'` (default), `'round-robin'` or `'strict-priority'` |
+| `queues` | `string[]` | Queues whose workers schedule fairly across tenants and enforce tier `concurrency`. Every process using these queues must load the plugin with the same list. |
+| `defaultTier` | `string` | Tier for tenants whose tier can't be resolved. Without it, their enqueues throw. |
+| `tierCacheTtl` | `number` | How long a resolved tier is cached, in ms (default `60000`). |
 
 ### TierConfig
 
@@ -58,7 +71,7 @@ interface TierConfig {
     max: number          // Maximum requests allowed in the window
     window: '1s' | '1m' | '1h'  // Sliding window duration
   }
-  concurrency: number    // Max concurrent jobs for this tier
+  concurrency: number    // Max concurrent jobs per tenant, per fair queue
   weight: number         // Scheduling weight (higher = more capacity share)
 }
 ```
@@ -156,7 +169,7 @@ The tenancy plugin exposes a management API:
 const tenancyApi = q.getExposed('tenancy') as any
 
 // Change a tenant's tier at runtime
-tenancyApi.setTier('tenant-123', 'pro')
+await tenancyApi.setTier('tenant-123', 'pro')   // setTier/override/removeOverride are async
 
 // Apply per-tenant overrides (e.g., temporary rate limit boost)
 tenancyApi.override('tenant-456', {

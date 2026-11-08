@@ -29,6 +29,11 @@ import {
   IDEM_CLAIM,
   IDEM_LOOKUP,
   IDEM_PURGE_EXPIRED,
+  SELECT_FAIR_DEQUEUE,
+  UPSERT_TENANT_POLICY,
+  RATE_PRUNE,
+  RATE_STATS,
+  RATE_INSERT,
   POLL_SCHEDULED,
   UPDATE_SCHEDULED_TO_PENDING,
   ACQUIRE_LOCK,
@@ -167,6 +172,7 @@ export class SQLiteBackendAdapter implements BackendAdapter {
   private db: Database.Database | null = null
   private readonly opts: SQLiteAdapterOpts
   private keyedInserts = 0
+  private readonly fairQueues = new Set<string>()
 
   constructor(opts: SQLiteAdapterOpts) {
     this.opts = opts
@@ -241,7 +247,9 @@ export class SQLiteBackendAdapter implements BackendAdapter {
 
     const dequeueTransaction = db.transaction((q: string, c: number) => {
       // Select candidate job ids (delayed retries become eligible at run_at)
-      const rows = db.prepare(SELECT_FOR_DEQUEUE).all(q, now, c) as Array<{ id: string }>
+      const rows = (this.fairQueues.has(q)
+        ? db.prepare(SELECT_FAIR_DEQUEUE).all({ queue: q, now, limit: c })
+        : db.prepare(SELECT_FOR_DEQUEUE).all(q, now, c)) as Array<{ id: string }>
       if (rows.length === 0) return []
 
       const results: DequeuedJob[] = []
@@ -292,6 +300,32 @@ export class SQLiteBackendAdapter implements BackendAdapter {
       const run_at = opts?.delay ? new Date(Date.now() + opts.delay).toISOString() : null
       db.prepare(NACK_REQUEUE).run({ run_at, id: jobId, token })
     }
+  }
+
+  async enableFairQueue(queue: string): Promise<void> {
+    this.fairQueues.add(queue)
+  }
+
+  async setTenantPolicies(policies: Record<string, { weight: number; maxActive?: number }>): Promise<void> {
+    const db = this.getDb()
+    const stmt = db.prepare(UPSERT_TENANT_POLICY)
+    db.transaction(() => {
+      for (const [tenant, p] of Object.entries(policies)) stmt.run(tenant, p.weight, p.maxActive ?? null)
+    })()
+  }
+
+  async consumeRateLimit(key: string, max: number, windowMs: number): Promise<{ allowed: boolean; retryAfterMs: number }> {
+    const db = this.getDb()
+    return db.transaction(() => {
+      const now = Date.now()
+      db.prepare(RATE_PRUNE).run(key, now - windowMs)
+      const { n, oldest } = db.prepare(RATE_STATS).get(key) as { n: number; oldest: number | null }
+      if (n < max) {
+        db.prepare(RATE_INSERT).run(key, now)
+        return { allowed: true, retryAfterMs: 0 }
+      }
+      return { allowed: false, retryAfterMs: Math.max(1, (oldest ?? now) + windowMs - now) }
+    }).immediate()
   }
 
   async recoverStaleJobs(queue: string, maxAgeMs: number): Promise<string[]> {

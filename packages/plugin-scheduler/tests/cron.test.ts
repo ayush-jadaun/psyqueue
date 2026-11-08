@@ -66,11 +66,14 @@ describe('Cron Jobs', () => {
     expect(processed).toBe(true)
 
     // Wait for the async job:completed handler to schedule the next run
-    await new Promise(r => setTimeout(r, 150))
+    const backend = getBackend(q)
+    let jobs = await backend.listJobs({ name: 'cleanup', status: 'scheduled' })
+    for (const deadline = Date.now() + 3000; jobs.data.length === 0 && Date.now() < deadline;) {
+      await new Promise(r => setTimeout(r, 25))
+      jobs = await backend.listJobs({ name: 'cleanup', status: 'scheduled' })
+    }
 
     // There should now be a new scheduled job for 'cleanup'
-    const backend = getBackend(q)
-    const jobs = await backend.listJobs({ name: 'cleanup', status: 'scheduled' })
     expect(jobs.data.length).toBeGreaterThanOrEqual(1)
     expect(jobs.data[0]!.cron).toBe('* * * * *')
     expect(jobs.data[0]!.runAt).toBeInstanceOf(Date)

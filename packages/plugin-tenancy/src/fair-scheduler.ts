@@ -15,11 +15,25 @@ export class FairScheduler {
   private rrIndex = 0
   private rrOrder: string[] = []
 
-  constructor(mode: SchedulingMode, tiers: Record<string, TierWeightConfig>) {
+  /**
+   * @param tiers  weights by tier name
+   * @param tierOf maps a tenant to its tier name; defaults to treating the
+   *               tenant id as the tier name
+   */
+  constructor(
+    mode: SchedulingMode,
+    tiers: Record<string, TierWeightConfig>,
+    private readonly tierOf: (tenant: string) => string | undefined = tenant => tenant,
+  ) {
     this.mode = mode
     this.weights = new Map(
       Object.entries(tiers).map(([name, cfg]) => [name, cfg.weight]),
     )
+  }
+
+  private weightOf(tenant: string, fallback: number): number {
+    const tier = this.tierOf(tenant)
+    return (tier !== undefined ? this.weights.get(tier) : undefined) ?? fallback
   }
 
   selectTenant(pendingTenants: string[]): string {
@@ -40,7 +54,7 @@ export class FairScheduler {
   private selectWFQ(pendingTenants: string[]): string {
     // Add weight to each pending tenant's deficit counter
     for (const tenant of pendingTenants) {
-      const weight = this.weights.get(tenant) ?? 1
+      const weight = this.weightOf(tenant, 1)
       const current = this.deficits.get(tenant) ?? 0
       this.deficits.set(tenant, current + weight)
     }
@@ -89,10 +103,10 @@ export class FairScheduler {
 
   private selectStrictPriority(pendingTenants: string[]): string {
     let best: string = pendingTenants[0]!
-    let bestWeight = this.weights.get(best) ?? 0
+    let bestWeight = this.weightOf(best, 0)
 
     for (const tenant of pendingTenants) {
-      const weight = this.weights.get(tenant) ?? 0
+      const weight = this.weightOf(tenant, 0)
       if (weight > bestWeight) {
         best = tenant
         bestWeight = weight

@@ -184,6 +184,7 @@ export class PostgresBackendAdapter implements BackendAdapter {
 
   private pool: Pool | null = null
   private keyedInserts = 0
+  private readonly fairQueues = new Set<string>()
   private readonly opts: PostgresAdapterOpts
 
   constructor(opts: PostgresAdapterOpts = {}) {
@@ -204,8 +205,16 @@ export class PostgresBackendAdapter implements BackendAdapter {
       max: this.opts.max ?? 10,
     })
 
-    // Run schema migrations
-    await this.pool.query(SCHEMA_SQL)
+    // Run schema migrations. Concurrent CREATE ... IF NOT EXISTS can still fail
+    // in Postgres, so processes starting together take turns.
+    const client = await this.pool.connect()
+    try {
+      await client.query(`SELECT pg_advisory_lock(hashtext('psyqueue_schema'))`)
+      await client.query(SCHEMA_SQL)
+    } finally {
+      await client.query(`SELECT pg_advisory_unlock(hashtext('psyqueue_schema'))`).catch(() => {})
+      client.release()
+    }
   }
 
   async disconnect(): Promise<void> {
@@ -310,16 +319,18 @@ export class PostgresBackendAdapter implements BackendAdapter {
     try {
       await client.query('BEGIN')
 
-      const selectResult = await client.query<JobRow>(
-        `SELECT * FROM psyqueue_jobs
-         WHERE queue = $1
-           AND status = 'pending'
-           AND (run_at IS NULL OR run_at <= NOW())
-         ORDER BY priority DESC, created_at ASC
-         LIMIT $2
-         FOR UPDATE SKIP LOCKED`,
-        [queue, count],
-      )
+      const selectResult = this.fairQueues.has(queue)
+        ? await this.selectFair(client, queue, count)
+        : await client.query<JobRow>(
+          `SELECT * FROM psyqueue_jobs
+           WHERE queue = $1
+             AND status = 'pending'
+             AND (run_at IS NULL OR run_at <= NOW())
+           ORDER BY priority DESC, created_at ASC
+           LIMIT $2
+           FOR UPDATE SKIP LOCKED`,
+          [queue, count],
+        )
 
       if (selectResult.rows.length === 0) {
         await client.query('COMMIT')
@@ -383,6 +394,79 @@ export class PostgresBackendAdapter implements BackendAdapter {
   async nack(jobId: string, opts?: NackOpts): Promise<void> {
     const { sql, params } = nackQuery(jobId, opts)
     await this.getPool().query(sql, params)
+  }
+
+  /**
+   * Fair dequeue (see the BackendAdapter docs): rank each tenant's pending jobs
+   * and order by (tenant's active + rank) / weight, skipping tenants at
+   * max_active. A per-queue advisory lock serializes fair dequeues so
+   * max_active holds across processes.
+   * ponytail: ranks every pending job of the queue per call, and serializes
+   * dequeues of a fair queue; fine for tens of thousands of pending jobs.
+   */
+  private async selectFair(client: PoolClient, queue: string, count: number) {
+    await client.query(`SELECT pg_advisory_xact_lock(hashtext('psyqueue_fair:' || $1))`, [queue])
+    return client.query<JobRow>(
+      `WITH active AS (
+         SELECT COALESCE(tenant_id, '') AS t, COUNT(*) AS c FROM psyqueue_jobs
+         WHERE queue = $1 AND status = 'active' GROUP BY 1
+       ),
+       ranked AS (
+         SELECT id, COALESCE(tenant_id, '') AS t, created_at,
+           ROW_NUMBER() OVER (PARTITION BY COALESCE(tenant_id, '') ORDER BY priority DESC, created_at ASC) AS rn
+         FROM psyqueue_jobs
+         WHERE queue = $1 AND status = 'pending' AND (run_at IS NULL OR run_at <= NOW())
+       ),
+       picked AS (
+         SELECT r.id, (COALESCE(a.c, 0) + r.rn) / COALESCE(p.weight, 1) AS vt, r.created_at
+         FROM ranked r
+         LEFT JOIN active a ON a.t = r.t
+         LEFT JOIN psyqueue_tenant_policies p ON p.tenant_id = r.t
+         WHERE p.max_active IS NULL OR COALESCE(a.c, 0) + r.rn <= p.max_active
+         ORDER BY vt ASC, r.created_at ASC
+         LIMIT $2
+       )
+       SELECT j.* FROM psyqueue_jobs j JOIN picked ON picked.id = j.id
+       ORDER BY picked.vt ASC, picked.created_at ASC
+       FOR UPDATE OF j SKIP LOCKED`,
+      [queue, count],
+    )
+  }
+
+  async enableFairQueue(queue: string): Promise<void> {
+    this.fairQueues.add(queue)
+  }
+
+  async setTenantPolicies(policies: Record<string, { weight: number; maxActive?: number }>): Promise<void> {
+    const entries = Object.entries(policies)
+    if (entries.length === 0) return
+    await this.getPool().query(
+      `INSERT INTO psyqueue_tenant_policies (tenant_id, weight, max_active)
+       SELECT * FROM unnest($1::text[], $2::double precision[], $3::int[])
+       ON CONFLICT (tenant_id) DO UPDATE SET weight = EXCLUDED.weight, max_active = EXCLUDED.max_active`,
+      [entries.map(e => e[0]), entries.map(e => e[1].weight), entries.map(e => e[1].maxActive ?? null)],
+    )
+  }
+
+  async consumeRateLimit(key: string, max: number, windowMs: number): Promise<{ allowed: boolean; retryAfterMs: number }> {
+    return this.withTransaction(async client => {
+      await client.query(`SELECT pg_advisory_xact_lock(hashtext('psyqueue_rate:' || $1))`, [key])
+      await client.query(
+        `DELETE FROM psyqueue_rate_events WHERE key = $1 AND ts <= NOW() - ($2::double precision * INTERVAL '1 millisecond')`,
+        [key, windowMs],
+      )
+      const { rows } = await client.query<{ n: string; wait_ms: number | null }>(
+        `SELECT COUNT(*) AS n,
+           EXTRACT(EPOCH FROM (MIN(ts) + ($2::double precision * INTERVAL '1 millisecond') - NOW())) * 1000 AS wait_ms
+         FROM psyqueue_rate_events WHERE key = $1`,
+        [key, windowMs],
+      )
+      if (Number(rows[0]!.n) < max) {
+        await client.query('INSERT INTO psyqueue_rate_events (key, ts) VALUES ($1, NOW())', [key])
+        return { allowed: true, retryAfterMs: 0 }
+      }
+      return { allowed: false, retryAfterMs: Math.max(1, Math.ceil(Number(rows[0]!.wait_ms ?? 1))) }
+    })
   }
 
   async recoverStaleJobs(queue: string, maxAgeMs: number): Promise<string[]> {

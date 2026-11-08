@@ -53,6 +53,9 @@ async function main() {
       return tenantTierMap[tenantId] ?? 'free'
     },
     scheduling: 'weighted-fair-queue',
+    // Workers of these queues share capacity fairly by tier weight and never
+    // run more than a tier's `concurrency` jobs of one tenant at once
+    queues: ['default'],
   }))
 
   // ── Handlers ─────────────────────────────────────────────────────────────
@@ -124,10 +127,10 @@ async function main() {
 
   console.log('\n-- Upgrading tenant-free-2 from free → pro at runtime --')
   const tenancyApi = q.getExposed('tenancy') as {
-    setTier: (tenantId: string, tier: string) => void
+    setTier: (tenantId: string, tier: string) => Promise<void>
     list: () => unknown[]
   }
-  tenancyApi.setTier('tenant-free-2', 'pro')
+  await tenancyApi.setTier('tenant-free-2', 'pro')
   tenantTierMap['tenant-free-2'] = 'pro'
   console.log('  Upgrade applied. tenant-free-2 now has pro rate limits.')
 

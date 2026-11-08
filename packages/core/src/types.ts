@@ -185,6 +185,23 @@ export interface BackendAdapter {
   /** Abort in-flight blocking dequeues (they return []), so workers stop promptly. */
   interruptBlocking?(): void
 
+  // ── Multi-tenancy (used by @psyqueue/plugin-tenancy) ──
+
+  /**
+   * From now on, dequeue from `queue` fairly across tenants: weighted fair
+   * queuing by tenant (policy weight), never exceeding a tenant's maxActive
+   * concurrently active jobs in this queue. Applies to this adapter instance;
+   * every process using the queue should call it.
+   */
+  enableFairQueue?(queue: string): Promise<void>
+  /** Upsert per-tenant scheduling policy (weight default 1, maxActive default unlimited). */
+  setTenantPolicies?(policies: Record<string, { weight: number; maxActive?: number }>): Promise<void>
+  /**
+   * Atomically record one event for `key` if fewer than `max` happened in the
+   * last `windowMs` (sliding window, shared by all processes).
+   */
+  consumeRateLimit?(key: string, max: number, windowMs: number): Promise<{ allowed: boolean; retryAfterMs: number }>
+
   /**
    * Non-blocking batch pop — grab up to `count` jobs immediately.
    * Called after blockingDequeue unblocks to grab more jobs in the same cycle.

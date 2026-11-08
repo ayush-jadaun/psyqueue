@@ -69,6 +69,18 @@ CREATE TABLE IF NOT EXISTS psyqueue_idempotency_keys (
 );
 CREATE INDEX IF NOT EXISTS idx_psyqueue_idempotency_expires ON psyqueue_idempotency_keys (expires_at);
 
+-- Multi-tenancy: scheduling policy per tenant, and a sliding-window rate log
+CREATE TABLE IF NOT EXISTS psyqueue_tenant_policies (
+  tenant_id TEXT PRIMARY KEY,
+  weight DOUBLE PRECISION NOT NULL DEFAULT 1,
+  max_active INTEGER
+);
+CREATE TABLE IF NOT EXISTS psyqueue_rate_events (
+  key TEXT NOT NULL,
+  ts TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_psyqueue_rate_events ON psyqueue_rate_events (key, ts);
+
 CREATE TABLE IF NOT EXISTS psyqueue_locks (
   key TEXT PRIMARY KEY,
   expires_at TIMESTAMPTZ NOT NULL,

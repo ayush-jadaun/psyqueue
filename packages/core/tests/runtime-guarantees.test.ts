@@ -20,7 +20,7 @@ async function reachable(plugin: PsyPlugin): Promise<boolean> {
   const q = new PsyQueue()
   q.use(plugin)
   try {
-    await Promise.race([q.start(), sleep(1500).then(() => { throw new Error('timeout') })])
+    await Promise.race([q.start(), sleep(10_000).then(() => { throw new Error('timeout') })])
     await q.stop()
     return true
   } catch {

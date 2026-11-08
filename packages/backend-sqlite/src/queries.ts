@@ -87,6 +87,39 @@ export const IDEM_CLAIM = `INSERT OR IGNORE INTO idempotency_keys (queue, name, 
 export const IDEM_LOOKUP = `SELECT job_id FROM idempotency_keys WHERE queue = ? AND name = ? AND key = ?`
 export const IDEM_PURGE_EXPIRED = `DELETE FROM idempotency_keys WHERE expires_at <= ?`
 
+// Fair dequeue: rank each tenant's pending jobs (rn = 1, 2, ...) and order all
+// candidates by (tenant's active jobs + rn) / weight, i.e. by when each job
+// would get its turn under weighted fair queuing. Tenants at max_active are
+// excluded. Jobs without a tenant form one more tenant, ''.
+// ponytail: ranks every pending job of the queue per call; fine for backlogs
+// of tens of thousands, add a per-tenant head index if it gets bigger.
+export const SELECT_FAIR_DEQUEUE = `
+WITH active AS (
+  SELECT COALESCE(tenant_id, '') AS t, COUNT(*) AS c FROM jobs
+  WHERE queue = @queue AND status = 'active' GROUP BY 1
+),
+ranked AS (
+  SELECT id, COALESCE(tenant_id, '') AS t, priority, created_at,
+    ROW_NUMBER() OVER (PARTITION BY COALESCE(tenant_id, '') ORDER BY priority DESC, created_at ASC) AS rn
+  FROM jobs
+  WHERE queue = @queue AND status = 'pending' AND (run_at IS NULL OR run_at <= @now)
+)
+SELECT r.id FROM ranked r
+LEFT JOIN active a ON a.t = r.t
+LEFT JOIN tenant_policies p ON p.tenant_id = r.t
+WHERE p.max_active IS NULL OR COALESCE(a.c, 0) + r.rn <= p.max_active
+ORDER BY (COALESCE(a.c, 0) + r.rn) * 1.0 / COALESCE(p.weight, 1) ASC, r.created_at ASC
+LIMIT @limit
+`
+
+export const UPSERT_TENANT_POLICY = `
+INSERT INTO tenant_policies (tenant_id, weight, max_active) VALUES (?, ?, ?)
+ON CONFLICT (tenant_id) DO UPDATE SET weight = excluded.weight, max_active = excluded.max_active
+`
+export const RATE_PRUNE = `DELETE FROM rate_events WHERE key = ? AND ts <= ?`
+export const RATE_STATS = `SELECT COUNT(*) AS n, MIN(ts) AS oldest FROM rate_events WHERE key = ?`
+export const RATE_INSERT = `INSERT INTO rate_events (key, ts) VALUES (?, ?)`
+
 export const POLL_SCHEDULED = `
 SELECT id FROM jobs
 WHERE status = 'scheduled' AND run_at <= ?
