@@ -1,97 +1,111 @@
 # PsyQueue vs Alternatives
 
-## Feature Matrix
+## What category PsyQueue is in
 
-| Feature | PsyQueue | BullMQ | Celery | Temporal | pg-boss |
-|---------|----------|--------|--------|----------|---------|
-| **Language** | TypeScript | TypeScript | Python | Go/Java/TS | TypeScript |
-| **Storage** | SQLite/Redis/Postgres | Redis only | Redis/RabbitMQ | Custom (Cassandra/SQL) | Postgres only |
-| **Zero-infra start** | SQLite, no server needed | Requires Redis | Requires broker | Requires Temporal server | Requires Postgres |
-| **Plugin architecture** | Micro-kernel, everything pluggable | Monolithic with hooks | Monolithic | Monolithic | Monolithic |
-| **Delayed jobs** | Plugin | Built-in | Built-in | Built-in | Built-in |
-| **Cron scheduling** | Plugin | Built-in | Built-in (celery beat) | Built-in | Built-in |
-| **Priority queues** | Built-in + deadline boost plugin | Built-in | Built-in (limited) | N/A (different model) | Built-in |
-| **DAG workflows** | Plugin | Flows (limited) | Canvas/chains | First-class | N/A |
-| **Saga compensation** | Plugin | N/A | N/A | Built-in (sagas) | N/A |
-| **Multi-tenancy** | Plugin (tiers, fair scheduling) | N/A (manual) | N/A (manual) | Namespaces | N/A |
-| **Rate limiting** | Plugin (per-tenant) | Rate limiter | celery rate_limit | N/A | N/A |
-| **Circuit breaker** | Plugin | N/A | N/A | N/A (use activity timeouts) | N/A |
-| **Backpressure** | Plugin (adaptive) | Concurrency limits | Prefetch limits | Built-in | N/A |
-| **Exactly-once** | Plugin (idempotency keys) | Job dedup by ID | N/A | Built-in | Singleton jobs |
-| **Crash recovery** | Plugin (WAL) | Redis persistence | Ack-based | Built-in | Postgres ACID |
-| **Distributed tracing** | Plugin (OTel) | N/A (manual) | Built-in (limited) | Built-in | N/A |
-| **Prometheus metrics** | Plugin | Built-in events | Built-in | Built-in | N/A |
-| **Audit log** | Plugin (hash-chained) | N/A | N/A | Event history | N/A |
-| **Dashboard** | Plugin | Bull Board | Flower | Temporal UI | pg-boss UI |
-| **Schema versioning** | Plugin (Zod + migration) | N/A | N/A | N/A (use versioned APIs) | N/A |
-| **Remote workers** | Plugin (gRPC + HTTP) | Redis-based | Celery workers | Activity workers | N/A |
-| **Chaos testing** | Plugin | N/A | N/A | N/A | N/A |
-| **Offline sync** | Plugin | N/A | N/A | N/A | N/A |
-| **Job fusion** | Plugin | N/A | N/A | N/A | N/A |
+PsyQueue is a **job queue library for Node.js/TypeScript**: you enqueue named jobs, workers process them with retries, backoff, scheduling and priorities, and you can inspect, replay or purge jobs afterwards. On top of that core, plugins add workflow-engine features (DAG workflows, saga compensation) and multi-tenant controls.
+
+That puts it between two groups of tools, and it is only compared against tools that do the same job:
+
+| Group | Tools | Compare on |
+|-------|-------|-----------|
+| **Job queues** | BullMQ, pg-boss, Graphile Worker | Setup cost, backend choice, throughput, job features |
+| **Workflow engines** | Temporal, Inngest | Workflows, compensation, durability, infra cost |
+
+### Why RabbitMQ (and Kafka, NATS, SQS) is not in the matrix
+
+RabbitMQ is a **message broker**, not a job queue. It is a standalone server that routes messages between services in any language (exchanges, routing keys, fan-out, pub/sub). It has no concept of a job: no retry-with-backoff policy, no cron, no job status, no "replay failed job". PsyQueue has no broker features: no exchanges, no cross-language routing, no general pub/sub (its event bus only broadcasts job lifecycle events).
+
+The one real overlap: if you use RabbitMQ *only* as a work queue for background jobs from a Node app, PsyQueue gives you job semantics out of the box without running a broker. If you need inter-service messaging, use a broker — PsyQueue is not a replacement.
+
+Celery (Python) is a job queue, but for a different language ecosystem, so it is not compared here.
+
+## Job queues: PsyQueue vs BullMQ vs pg-boss vs Graphile Worker
+
+| Feature | PsyQueue | BullMQ | pg-boss | Graphile Worker |
+|---------|----------|--------|---------|-----------------|
+| **Storage** | SQLite / Redis / Postgres | Redis | Postgres | Postgres |
+| **Zero-infra start** | Yes (embedded SQLite) | No (needs Redis) | No (needs Postgres) | No (needs Postgres) |
+| **Architecture** | Micro-kernel, features are opt-in plugins | Batteries included | Batteries included | Batteries included |
+| **Delayed jobs** | Plugin | Built-in | Built-in | Built-in |
+| **Cron scheduling** | Plugin | Built-in (job schedulers) | Built-in | Built-in |
+| **Priority** | Built-in + deadline-boost plugin | Built-in | Built-in | Built-in |
+| **Deduplication** | Plugin (idempotency keys) | Built-in (job ID, deduplication option) | Built-in (singleton keys) | Built-in (job keys) |
+| **Rate limiting** | Plugin (per tenant) | Built-in (per queue; per group in BullMQ Pro) | Built-in (throttling) | Manual |
+| **Parent/child jobs** | Plugin (DAG workflows, conditional branches) | Built-in (Flows: parent/child trees) | No | No |
+| **Saga compensation** | Plugin | No | No | No |
+| **Multi-tenant fair scheduling** | Plugin (tiers, per-tenant limits) | BullMQ Pro groups (paid) | No | No |
+| **Circuit breaker** | Plugin | No | No | No |
+| **Adaptive backpressure** | Plugin | Concurrency + rate limits | Concurrency | Concurrency |
+| **OpenTelemetry tracing** | Plugin | Built-in telemetry interface (`bullmq-otel`) | No | No |
+| **Metrics** | Plugin (Prometheus) | Built-in metrics API | No | No |
+| **Tamper-evident audit log** | Plugin (hash-chained) | No | No | No |
+| **Payload schema versioning** | Plugin (Zod + migrations) | No | No | No |
+| **Remote workers in other runtimes** | Plugin (gRPC, HTTP) | Workers share Redis (Node, Python, Elixir, PHP clients) | No | No |
+| **Dashboard** | Package (`@psyqueue/dashboard`) | Third-party (Bull Board) / paid (Taskforce.sh) | No | No |
+| **Maturity / community** | New | Large, widely used in production | Established | Established |
+
+Features that are **unique to PsyQueue** among job queues: saga compensation, circuit breaker, adaptive backpressure, hash-chained audit log, schema versioning, job fusion, chaos testing and offline sync.
+
+## Workflow features: PsyQueue vs Temporal vs Inngest
+
+PsyQueue's workflow plugins cover part of what workflow engines do. They are a lighter option, not a full replacement.
+
+| | PsyQueue (workflows + saga plugins) | Temporal | Inngest |
+|---|---|---|---|
+| **Model** | DAG of jobs declared with a builder | Durable execution of workflow code | Durable step functions triggered by events |
+| **Infra** | Your existing backend (SQLite/Redis/Postgres) | Temporal server cluster or Temporal Cloud | Inngest server (self-host) or Inngest Cloud |
+| **Compensation / rollback** | Saga plugin | Saga pattern in workflow code | Manual in step code |
+| **Deterministic replay of workflow code** | No | Yes | Partial (step memoization) |
+| **Long-running workflows (days/months)** | Possible, not the design focus | Core strength | Core strength |
+| **Languages** | TypeScript | Go, Java, TS, Python, .NET, PHP | TS, Python, Go |
+
+If you need Temporal-grade durability for long-running business processes, use Temporal. If you want DAG workflows with rollback inside the job queue you already run, PsyQueue covers that without extra infrastructure.
 
 ## Benchmark Results
 
-Measured with 5,000 jobs, concurrency:10, timing from enqueue to `job:completed` event (after ack). Both PsyQueue and BullMQ use the same methodology: enqueue all jobs first, then start a worker with concurrency:10 and measure until all `job:completed` events have fired.
+Measured with 5,000 jobs, a no-op handler and concurrency 10, timed from enqueue until every `job:completed` event has fired (so ack overhead is included). PsyQueue uses `startWorker()` with a 1 ms poll interval; BullMQ uses its native `Worker`.
 
 | Metric | PsyQueue (Redis) | BullMQ (Redis) |
 |--------|-------------------|----------------|
 | **Processing throughput** | **7,989 jobs/sec** | 6,187 jobs/sec |
-| Ratio | **1.29x faster** | baseline |
+| Ratio | **1.29x** | baseline |
 
-### Why PsyQueue is faster
+**How to read this:** it is a micro-benchmark of queue overhead. With no-op handlers, the gap comes entirely from Redis round-trips and bookkeeping. With real handlers that do I/O for tens of milliseconds, both queues spend most of their time in your code and the difference shrinks. PsyQueue's 1 ms polling also costs some idle CPU, while BullMQ's blocking commands do not. Run it on your own hardware: `npx tsx benchmarks/comparison.ts`.
 
-1. **ackAndFetch fusion** -- PsyQueue acks the current job and dequeues the next in a single Lua script call (2 Redis round-trips per job vs 3 for separate ack + dequeue).
-2. **Hybrid list + sorted set** -- Default-priority jobs use RPUSH/RPOP lists (O(1)), priority jobs use sorted sets. BullMQ uses sorted sets for everything.
-3. **Hash field packing** -- Hot fields (id, status, priority, attempt) stay as individual hash fields for fast Lua access. Cold fields (backoff settings, workflow IDs, metadata) are packed into a single `_ext` JSON blob, reducing per-job hash fields from ~30 to 13.
-4. **Single dequeue loop** -- One loop with semaphore-controlled concurrency and a local job buffer, avoiding overhead of multiple independent polling loops.
-5. **Active set uses SADD/SREM** -- Plain set operations instead of sorted set ZADD/ZREM for tracking active jobs.
+### Where the lower overhead comes from
 
-### Benchmark methodology
+1. **ackAndFetch fusion** -- acks the current job and dequeues the next one in a single Lua script call (2 Redis round-trips per job instead of 3).
+2. **Hybrid list + sorted set** -- default-priority jobs use RPUSH/RPOP lists (O(1)); only prioritized jobs use sorted sets.
+3. **Hash field packing** -- hot fields (id, status, priority, attempt) are individual hash fields; cold fields are packed into one `_ext` JSON blob, cutting per-job hash fields from ~30 to 13.
+4. **Single dequeue loop** -- one loop with semaphore-controlled concurrency and a local job buffer.
+5. **Active set uses SADD/SREM** -- plain set operations instead of ZADD/ZREM for tracking active jobs.
 
-Both systems are tested identically:
-1. Enqueue 5,000 jobs with a no-op handler.
-2. Start a worker with concurrency:10.
-3. Measure wall time until all jobs emit a `completed` event.
-4. For PsyQueue Redis: uses `startWorker()` with poll mode to match BullMQ's event-driven model.
-
-Run the benchmark yourself: `npx tsx benchmarks/comparison.ts`
-
-## When to Choose PsyQueue
+## When to Choose What
 
 **Choose PsyQueue when:**
 
-- You want to start simple (SQLite) and grow to production (Redis/Postgres) without rewriting code.
-- You need a modular system where you only pay for what you use.
-- You're building a multi-tenant SaaS and need built-in fair scheduling and rate limiting.
-- You want DAG workflows with Saga compensation in your job queue.
-- You need enterprise features (audit logs, circuit breakers, schema versioning) that aren't available in simpler queues.
-- You prefer TypeScript-first tooling with full type safety.
-- You need high throughput -- PsyQueue beats BullMQ on Redis processing benchmarks.
+- You want to start with zero infrastructure (SQLite) and move to Redis or Postgres later without rewriting job code.
+- You are building multi-tenant SaaS and need fair scheduling and per-tenant limits without paying for BullMQ Pro.
+- You want DAG workflows with saga rollback inside your job queue, without running a Temporal or Inngest server.
+- You need audit logs, circuit breakers or payload schema versioning built into the queue.
 
 **Choose BullMQ when:**
 
-- You already have Redis and want a battle-tested, widely-used queue.
-- You need simple job processing without many advanced features.
-- You want a large community and ecosystem of tools.
+- You already run Redis and want a battle-tested queue with a large community.
+- You need workers in several languages sharing one queue.
+- Production track record matters more to you than extra features.
 
-**Choose Celery when:**
+**Choose pg-boss or Graphile Worker when:**
 
-- Your stack is Python.
-- You need mature tooling (Flower dashboard, celery beat).
-- You're running in a well-established Python/Django/Flask ecosystem.
+- You already use Postgres, want jobs enqueued in the same transaction as your data, and need moderate throughput.
 
-**Choose Temporal when:**
+**Choose Temporal or Inngest when:**
 
-- You're building complex, long-running workflows (hours/days).
-- You need deterministic workflow replay.
-- You have the infrastructure budget for the Temporal server.
-- Workflow correctness is more important than simplicity.
+- Workflows run for days or months, need deterministic replay, or workflow correctness is worth running extra infrastructure.
 
-**Choose pg-boss when:**
+**Choose RabbitMQ (or another broker) when:**
 
-- You already use Postgres and want zero additional infrastructure.
-- You need simple job processing with ACID guarantees.
-- Your volume is moderate (pg-boss is not designed for very high throughput).
+- You need messaging between services: routing, fan-out, pub/sub, or many languages talking over one broker. That is a different problem from a job queue.
 
 ## Migration from BullMQ
 
@@ -111,11 +125,10 @@ BullMQ and PsyQueue share similar concepts. Here's a mapping:
 
 ### Key Differences
 
-1. **Backend**: BullMQ is Redis-only. PsyQueue supports SQLite, Redis, and Postgres.
-2. **Worker model**: BullMQ has a separate `Worker` class with built-in polling. PsyQueue uses `q.handle()` + `q.startWorker()` for production or `q.processNext()` for simple use cases.
-3. **Plugins**: BullMQ features are built-in. PsyQueue features are opt-in plugins.
-4. **Multi-tenancy**: BullMQ has no native multi-tenancy. PsyQueue has a dedicated tenancy plugin.
-5. **Performance**: PsyQueue processes 7,989 jobs/sec vs BullMQ's 6,187 jobs/sec (1.29x faster) thanks to ackAndFetch fusion and the hybrid list + sorted-set model.
+1. **Backend**: BullMQ is Redis-only. PsyQueue supports SQLite, Redis and Postgres.
+2. **Worker model**: BullMQ has a separate `Worker` class. PsyQueue uses `q.handle()` + `q.startWorker()` for production, or `q.processNext()` for simple cases.
+3. **Plugins**: BullMQ features are built in. PsyQueue features are opt-in plugins.
+4. **Multi-tenancy**: open-source BullMQ has no tenant fairness (groups are in BullMQ Pro). PsyQueue has a tenancy plugin.
 
 ## Migration from pg-boss
 
@@ -130,5 +143,5 @@ BullMQ and PsyQueue share similar concepts. Here's a mapping:
 ### Key Differences
 
 1. **Storage**: pg-boss is Postgres-only. PsyQueue supports multiple backends.
-2. **Polling**: pg-boss handles polling internally. With PsyQueue you use `startWorker()` for continuous processing or `processNext()` for simple use cases.
-3. **Features**: PsyQueue offers workflows, tenancy, circuit breakers, and many other features not available in pg-boss.
+2. **Polling**: pg-boss handles polling internally. With PsyQueue you use `startWorker()` for continuous processing or `processNext()` for simple cases.
+3. **Features**: PsyQueue adds workflows, tenancy, circuit breakers and other plugins that pg-boss does not have.

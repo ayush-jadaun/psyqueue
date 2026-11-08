@@ -111,7 +111,7 @@ Key architectural advantages over BullMQ:
 - **Fused `ackAndFetch`** — ack + dequeue in one Redis call (2 round-trips vs 3)
 - **Hybrid list + sorted set** — O(1) dequeue for priority=0 jobs
 - **Hash field packing** — 13 fields vs 30 per HGETALL
-- **10 features BullMQ doesn't have** — workflows, saga, tenancy, fusion, chaos testing, etc.
+- **Features open-source BullMQ doesn't ship** — saga compensation, multi-tenant fair scheduling, circuit breaker, audit log, job fusion, chaos testing, etc. See [docs/comparison.md](docs/comparison.md).
 
 ## Architecture
 
