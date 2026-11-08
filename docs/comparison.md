@@ -71,13 +71,13 @@ Measured on Windows 11 with Redis 7 in Docker:
 
 | Scenario | PsyQueue | BullMQ | Ratio |
 |----------|----------|--------|-------|
-| No-op handler, 10k jobs, concurrency 10 | 5,273 jobs/s | 4,478 jobs/s | 1.18x |
-| 5 ms async work, 4k jobs, concurrency 50 | 3,188 jobs/s | 3,131 jobs/s | 1.02x |
-| 20 ms async work, 2k jobs, concurrency 50 | 1,603 jobs/s | 1,553 jobs/s | 1.03x |
+| No-op handler, 10k jobs, concurrency 10 | 12,982 jobs/s | 12,276 jobs/s | 1.06x |
+| 5 ms async work, 4k jobs, concurrency 50 | 3,195 jobs/s | 3,129 jobs/s | 1.02x |
+| 20 ms async work, 2k jobs, concurrency 50 | 1,599 jobs/s | 1,581 jobs/s | 1.01x |
 
 **How to read this:**
 
-- The no-op row measures pure queue overhead and is noisy: individual runs ranged 4,240–6,124 (PsyQueue) and 4,190–5,464 (BullMQ).
+- The no-op row measures pure queue overhead and is noisy: individual runs ranged 12,543–13,040 (PsyQueue) and 12,185–12,531 (BullMQ).
 - With real handler work, both queues are within a few percent of each other. Your handler dominates, not the queue.
 - Both libraries make the same core design choices: a fused "ack + fetch next job" Lua script, a list for normal jobs and a sorted set for priority jobs. Neither has a structural speed advantage.
 - PsyQueue's guarantee against duplicate runs costs nothing per job. It uses one lease-renewal call per worker every `leaseMs / 4` (15 s by default), not a lock per job.

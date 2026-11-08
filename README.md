@@ -110,9 +110,9 @@ Fair head-to-head vs BullMQ (both on defaults, median of 3 runs): `npx tsx bench
 
 | Scenario | PsyQueue | BullMQ |
 |----------|----------|--------|
-| No-op handler, concurrency 10 | 5,273 jobs/s | 4,478 jobs/s |
-| 5 ms async work, concurrency 50 | 3,188 jobs/s | 3,131 jobs/s |
-| 20 ms async work, concurrency 50 | 1,603 jobs/s | 1,553 jobs/s |
+| No-op handler, concurrency 10 | 12,982 jobs/s | 12,276 jobs/s |
+| 5 ms async work, concurrency 50 | 3,195 jobs/s | 3,129 jobs/s |
+| 20 ms async work, concurrency 50 | 1,599 jobs/s | 1,581 jobs/s |
 
 In short: on par with BullMQ. Raw queue overhead is slightly lower; with real handler work the two are within a few percent. Pick PsyQueue for its features and zero-infra start, not for speed. Details in [docs/comparison.md](docs/comparison.md#benchmark-results).
 
