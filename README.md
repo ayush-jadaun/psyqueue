@@ -200,6 +200,8 @@ const { queue, config } = PsyQueue.from('enterprise')
 
 ## Documentation
 
+- [Upgrading from 0.1.x](docs/UPGRADING.md) -- breaking changes in this release
+
 - [Getting Started](docs/getting-started.md) -- Installation, first job, and step-by-step guide
 - [Architecture](docs/architecture.md) -- Kernel design, plugin system, middleware pipeline
 - [API Reference](docs/api-reference.md) -- Full API documentation for the core package
