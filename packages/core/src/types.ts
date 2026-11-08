@@ -89,6 +89,12 @@ export interface NackOpts {
   delay?: number
   deadLetter?: boolean
   reason?: string
+  /**
+   * When set, the nack only applies if the job is still active and holds this
+   * token. Workers always pass it, so a worker whose job was reclaimed (lease
+   * expired) can't overwrite the state another worker now owns.
+   */
+  completionToken?: string
 }
 
 export interface JobFilter {

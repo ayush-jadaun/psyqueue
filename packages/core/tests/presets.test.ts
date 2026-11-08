@@ -6,7 +6,7 @@ describe('Presets', () => {
     expect(presets['lite']).toBeDefined()
     expect(presets['lite']!.plugins).toContain('backend-sqlite')
     expect(presets['lite']!.plugins).toContain('scheduler')
-    expect(presets['lite']!.plugins).toContain('crash-recovery')
+    expect(presets['lite']!.plugins).not.toContain('crash-recovery')
   })
 
   it('defines saas preset with correct plugins', () => {

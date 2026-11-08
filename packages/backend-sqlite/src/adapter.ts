@@ -23,6 +23,8 @@ import {
   NACK_DEAD,
   NACK_FAILED,
   NACK_REQUEUE,
+  RECOVER_STALE,
+  EXTEND_LEASE,
   POLL_SCHEDULED,
   UPDATE_SCHEDULED_TO_PENDING,
   ACQUIRE_LOCK,
@@ -169,6 +171,11 @@ export class SQLiteBackendAdapter implements BackendAdapter {
     this.db.pragma('journal_mode = WAL')
     this.db.pragma('foreign_keys = ON')
     this.db.exec(SCHEMA_SQL)
+    // Migrate databases created before leases existed
+    const cols = this.db.prepare('PRAGMA table_info(jobs)').all() as Array<{ name: string }>
+    if (!cols.some(c => c.name === 'heartbeat_at')) {
+      this.db.exec('ALTER TABLE jobs ADD COLUMN heartbeat_at INTEGER')
+    }
   }
 
   async disconnect(): Promise<void> {
@@ -213,10 +220,11 @@ export class SQLiteBackendAdapter implements BackendAdapter {
   async dequeue(queue: string, count: number): Promise<DequeuedJob[]> {
     const db = this.getDb()
     const now = new Date().toISOString()
+    const nowMs = Date.now()
 
     const dequeueTransaction = db.transaction((q: string, c: number) => {
-      // Select candidate job ids
-      const rows = db.prepare(SELECT_FOR_DEQUEUE).all(q, c) as Array<{ id: string }>
+      // Select candidate job ids (delayed retries become eligible at run_at)
+      const rows = db.prepare(SELECT_FOR_DEQUEUE).all(q, now, c) as Array<{ id: string }>
       if (rows.length === 0) return []
 
       const results: DequeuedJob[] = []
@@ -225,7 +233,7 @@ export class SQLiteBackendAdapter implements BackendAdapter {
 
       for (const row of rows) {
         const token = randomUUID()
-        updateStmt.run(now, token, row.id)
+        updateStmt.run(now, token, nowMs, row.id)
         const updated = selectStmt.get(row.id) as JobRow
         results.push(deserializeDequeuedJob(updated))
       }
@@ -236,43 +244,51 @@ export class SQLiteBackendAdapter implements BackendAdapter {
     return dequeueTransaction(queue, count)
   }
 
-  async ack(jobId: string, completionToken?: string): Promise<AckResult> {
+  async ack(jobId: string, completionToken?: string, resultJson?: string): Promise<AckResult> {
     const db = this.getDb()
     const now = new Date().toISOString()
+    const result = resultJson ?? null
 
     if (completionToken) {
-      const result = db.prepare(ACK_WITH_TOKEN).run(now, jobId, completionToken)
-      if (result.changes === 0) {
-        return { alreadyCompleted: true }
-      }
-      return { alreadyCompleted: false }
+      const res = db.prepare(ACK_WITH_TOKEN).run(now, result, jobId, completionToken)
+      return { alreadyCompleted: res.changes === 0 }
     }
 
-    db.prepare(ACK_WITHOUT_TOKEN).run(now, jobId)
+    db.prepare(ACK_WITHOUT_TOKEN).run(now, result, jobId)
     return { alreadyCompleted: false }
   }
 
   async nack(jobId: string, opts?: NackOpts): Promise<void> {
+    this.applyNack(jobId, opts)
+  }
+
+  private applyNack(jobId: string, opts?: NackOpts): void {
     const db = this.getDb()
+    const token = opts?.completionToken ?? null
+    const error = opts?.reason ? JSON.stringify({ message: opts.reason, retryable: false }) : null
 
     if (opts?.deadLetter) {
-      const errorJson = opts.reason ? JSON.stringify({ message: opts.reason, retryable: false }) : null
-      db.prepare(NACK_DEAD).run(errorJson, jobId)
-      return
+      db.prepare(NACK_DEAD).run({ error, id: jobId, token })
+    } else if (opts?.requeue === false) {
+      db.prepare(NACK_FAILED).run({ error, id: jobId, token })
+    } else {
+      const run_at = opts?.delay ? new Date(Date.now() + opts.delay).toISOString() : null
+      db.prepare(NACK_REQUEUE).run({ run_at, id: jobId, token })
     }
+  }
 
-    if (opts?.requeue === false) {
-      const errorJson = opts.reason ? JSON.stringify({ message: opts.reason, retryable: false }) : null
-      db.prepare(NACK_FAILED).run(errorJson, jobId)
-      return
-    }
+  async recoverStaleJobs(queue: string, maxAgeMs: number): Promise<string[]> {
+    const rows = this.getDb().prepare(RECOVER_STALE).all(queue, Date.now() - maxAgeMs) as Array<{ id: string }>
+    return rows.map(r => r.id)
+  }
 
-    // Default: requeue
-    let runAt: string | null = null
-    if (opts?.delay) {
-      runAt = new Date(Date.now() + opts.delay).toISOString()
-    }
-    db.prepare(NACK_REQUEUE).run(runAt, jobId)
+  async extendLeases(_queue: string, leases: Array<{ jobId: string; token: string }>): Promise<void> {
+    const db = this.getDb()
+    const stmt = db.prepare(EXTEND_LEASE)
+    const now = Date.now()
+    db.transaction(() => {
+      for (const l of leases) stmt.run(now, l.jobId, l.token)
+    })()
   }
 
   async getJob(jobId: string): Promise<Job | null> {
@@ -369,23 +385,11 @@ export class SQLiteBackendAdapter implements BackendAdapter {
           }
           case 'ack': {
             const now = new Date().toISOString()
-            db.prepare(ACK_WITHOUT_TOKEN).run(now, op.jobId)
+            db.prepare(ACK_WITHOUT_TOKEN).run(now, null, op.jobId)
             break
           }
           case 'nack': {
-            if (op.opts?.deadLetter) {
-              const errorJson = op.opts.reason ? JSON.stringify({ message: op.opts.reason, retryable: false }) : null
-              db.prepare(NACK_DEAD).run(errorJson, op.jobId)
-            } else if (op.opts?.requeue === false) {
-              const errorJson = op.opts.reason ? JSON.stringify({ message: op.opts.reason, retryable: false }) : null
-              db.prepare(NACK_FAILED).run(errorJson, op.jobId)
-            } else {
-              let runAt: string | null = null
-              if (op.opts?.delay) {
-                runAt = new Date(Date.now() + op.opts.delay).toISOString()
-              }
-              db.prepare(NACK_REQUEUE).run(runAt, op.jobId)
-            }
+            this.applyNack(op.jobId, op.opts)
             break
           }
           case 'update': {

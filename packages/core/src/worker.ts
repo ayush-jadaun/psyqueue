@@ -1,27 +1,5 @@
-import type {
-  BackendAdapter,
-  DequeuedJob,
-  Job,
-  JobHandler,
-  HandlerOpts,
-  EventBusInterface,
-  Middleware,
-  WorkerOpts,
-  EnqueueOpts,
-} from './types.js'
-import type { MiddlewarePipeline } from './middleware-pipeline.js'
-import { createContext } from './context.js'
-
-interface RegisteredHandler {
-  handler: JobHandler
-  opts: HandlerOpts
-}
-
-interface WorkerInternals {
-  enqueue: (name: string, payload: unknown, opts?: EnqueueOpts) => Promise<string>
-  classifyError: (error: Error) => 'transient' | 'validation' | 'rate-limit' | 'fatal' | 'unknown'
-  calculateBackoff: (job: Job) => number
-}
+import type { BackendAdapter, DequeuedJob, WorkerOpts } from './types.js'
+import { runJob, type RunnerDeps } from './job-runner.js'
 
 /**
  * Single-loop semaphore worker architecture.
@@ -47,15 +25,19 @@ export class WorkerPool {
   private held = new Map<string, string>()
   private heartbeat: ReturnType<typeof setInterval> | null = null
 
+  private readonly backend: BackendAdapter
+
   constructor(
     private queue: string,
-    private backend: BackendAdapter,
-    private pipeline: MiddlewarePipeline,
-    private handlers: Map<string, RegisteredHandler>,
-    private eventBus: EventBusInterface,
+    private deps: RunnerDeps,
     private opts: WorkerOpts,
-    private internals: WorkerInternals,
-  ) {}
+  ) {
+    this.backend = deps.backend
+  }
+
+  private get eventBus() {
+    return this.deps.eventBus
+  }
 
   start(): void {
     this.running = true
@@ -90,7 +72,15 @@ export class WorkerPool {
   /** Run a job in a concurrency slot; releases the slot and lease when done. */
   private run(job: DequeuedJob): void {
     this.activeCount++
-    this.processJob(job).finally(() => {
+    this.processJob(job).catch((err: unknown) => {
+      // Backend failure while acking/nacking. Never let it become an unhandled
+      // rejection (that kills the process); the lease reclaims the job later.
+      this.eventBus.emit('worker:error', {
+        queue: this.queue,
+        jobId: job.id,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }).finally(() => {
       this.held.delete(job.id)
       this.releaseSlot()
     })
@@ -292,158 +282,11 @@ export class WorkerPool {
     }
   }
 
-  private async processJob(dequeuedJob: DequeuedJob): Promise<void> {
-    const job = dequeuedJob as Job
-    const completionToken = dequeuedJob.completionToken
-    const backend = this.backend
-
-    const registered = this.handlers.get(job.name)
-    if (!registered) {
-      // No handler registered for this job name -- nack with dead letter
-      await backend.nack(job.id, {
-        requeue: false,
-        deadLetter: true,
-        reason: `No handler registered for job "${job.name}"`,
-      })
-      this.eventBus.emit('job:failed', {
-        jobId: job.id,
-        queue: job.queue,
-        name: job.name,
-        error: `No handler registered for job "${job.name}"`,
-      })
-      return
-    }
-
-    const ctx = createContext(job, 'process', {
-      enqueue: (n, p, o) => this.internals.enqueue(n, p, o),
-      updateJob: async (id, updates) => {
-        await backend.atomic([{ type: 'update', jobId: id, updates }])
-        Object.assign(job, updates)
-      },
-    })
-
-    this.eventBus.emit('job:started', { jobId: job.id, queue: job.queue, name: job.name })
-
-    // Register the job handler as a finalize middleware so user/plugin middleware runs first
-    const handlerMiddleware: Middleware = async (c, next) => {
-      const result = await registered.handler(c)
-      c.job.result = result
-      await next()
-    }
-
-    try {
-      // Run the process pipeline
-      await this.pipeline.run('process', ctx)
-
-      // Run the handler
-      await handlerMiddleware(ctx, async () => {})
-
-      // Check if middleware requested dead letter
-      if (ctx.state['_deadLetter']) {
-        await backend.nack(job.id, {
-          requeue: false,
-          deadLetter: true,
-          reason: String(ctx.state['_deadLetter']),
-        })
-        this.eventBus.emit('job:dead', {
-          jobId: job.id,
-          queue: job.queue,
-          name: job.name,
-          reason: ctx.state['_deadLetter'],
-        })
-        return
-      }
-
-      // Check if middleware requested requeue
-      if (ctx.state['_requeue']) {
-        const requeueOpts = ctx.state['_requeue'] as { delay?: number; priority?: number }
-        await backend.nack(job.id, {
-          requeue: true,
-          delay: requeueOpts.delay,
-        })
-        this.eventBus.emit('job:requeued', { jobId: job.id, queue: job.queue, name: job.name })
-        return
-      }
-
-      // Use ackAndFetch when available to fuse ack + dequeue in one call
-      const resultJson = job.result !== undefined ? JSON.stringify(job.result) : undefined
-      if (backend.ackAndFetch) {
-        const { nextJob } = await backend.ackAndFetch(job.id, completionToken, job.queue, resultJson)
-        if (nextJob) {
-          this.hold(nextJob)
-          this.jobBuffer.push(nextJob)
-        }
-      } else {
-        const resultJson = job.result !== undefined ? JSON.stringify(job.result) : undefined
-        await backend.ack(job.id, completionToken, resultJson)
-      }
-      this.eventBus.emit('job:completed', {
-        jobId: job.id,
-        queue: job.queue,
-        name: job.name,
-        result: job.result,
-      })
-    } catch (err) {
-      // Failure path
-      const error = err instanceof Error ? err : new Error(String(err))
-
-      // Classify error
-      const category = this.internals.classifyError(error)
-      const retryable = category !== 'fatal' && category !== 'validation'
-
-      const jobError = {
-        message: error.message,
-        stack: error.stack,
-        category,
-        retryable,
-      }
-
-      // Check retries
-      if (retryable && job.attempt < job.maxRetries) {
-        const delay = this.internals.calculateBackoff(job)
-
-        if (delay > 0 && delay <= 1000) {
-          // Short delay: wait in-process then requeue immediately.
-          // This avoids the scheduled→ready round-trip through the scheduler,
-          // which adds poll interval latency. For delays > 1s, use the
-          // scheduled set so we don't hold memory/block the worker.
-          await new Promise(r => setTimeout(r, delay))
-          await backend.nack(job.id, { requeue: true, delay: 0 })
-        } else {
-          await backend.nack(job.id, { requeue: true, delay })
-        }
-
-        this.eventBus.emit('job:retry', {
-          jobId: job.id,
-          queue: job.queue,
-          name: job.name,
-          attempt: job.attempt,
-          delay,
-          error: error.message,
-        })
-      } else {
-        // Exhausted retries or non-retryable -- dead letter
-        await backend.nack(job.id, {
-          requeue: false,
-          deadLetter: true,
-          reason: error.message,
-        })
-
-        this.eventBus.emit('job:dead', {
-          jobId: job.id,
-          queue: job.queue,
-          name: job.name,
-          error: jobError,
-          attempt: job.attempt,
-        })
-      }
-
-      this.eventBus.emit('job:failed', {
-        jobId: job.id,
-        queue: job.queue,
-        name: job.name,
-        error: error.message,
-      })
+  private async processJob(job: DequeuedJob): Promise<void> {
+    const nextJob = await runJob(job, this.deps, { fetchNext: true })
+    if (nextJob) {
+      this.hold(nextJob)
+      this.jobBuffer.push(nextJob)
     }
   }
 }

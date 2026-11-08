@@ -278,60 +278,16 @@ try {
 
 ## Crash Recovery
 
-Write-ahead log (WAL) based recovery of orphaned jobs. If the process crashes mid-execution, jobs are automatically requeued on the next startup.
+Crash recovery is built into the core worker; there is no plugin to install.
 
-### Installation
-
-```bash
-npm install @psyqueue/plugin-crash-recovery
-```
-
-### Configuration
+Every worker renews a lease on each job it holds every `leaseMs / 4`. If a worker crashes or hangs, it stops renewing, and after `leaseMs` (default 60 s) another worker returns the job to the queue. Jobs that run longer than `leaseMs` are safe while their worker is alive.
 
 ```typescript
-import { crashRecovery } from '@psyqueue/plugin-crash-recovery'
-
-q.use(crashRecovery({
-  walPath: './psyqueue.wal',
-  autoRecover: true,
-  onRecoverActiveJob: 'requeue',
-  shutdownTimeout: 30_000,
-}))
+q.startWorker('emails', { concurrency: 10, leaseMs: 60_000 })
 ```
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `walPath` | `string` | `'./psyqueue.wal'` | Path to the write-ahead log file |
-| `autoRecover` | `boolean` | `true` | Automatically recover orphaned jobs on start |
-| `onRecoverActiveJob` | `'requeue' \| 'fail' \| Function` | `'requeue'` | What to do with jobs that were active during a crash |
-| `shutdownTimeout` | `number` | `30000` | Max time to wait for in-flight jobs on shutdown (ms) |
+A worker whose lease expired can't overwrite the job afterwards: its late ack or nack is rejected because the job's completion token changed. Works the same on SQLite, Postgres and Redis.
 
-**Depends on:** `backend`
+Processing is at-least-once: a job that was running when its worker died runs again, so side effects in handlers should be idempotent.
 
-### How It Works
-
-1. **Before processing** (guard phase): Writes `{ jobId, status: 'active' }` to the WAL.
-2. **After processing** (finalize phase): Writes `{ jobId, status: 'completed' }` to the WAL.
-3. **On failure** (finalize phase): Writes `{ jobId, status: 'failed' }` to the WAL.
-4. **On start**: Reads the WAL and finds jobs marked `active` without a subsequent `completed` or `failed` entry. These are orphaned jobs from a crash.
-
-### Recovery Strategies
-
-| Strategy | Behavior |
-|----------|----------|
-| `'requeue'` | Put the job back in the queue for retry |
-| `'fail'` | Nack without requeue (counts as a failure) |
-| Custom function | Per-job decision based on job ID and attempt number |
-
-```typescript
-q.use(crashRecovery({
-  onRecoverActiveJob: async (job) => {
-    if (job.attempt >= 3) return 'dead-letter'
-    return 'requeue'
-  },
-}))
-```
-
-### Graceful Shutdown
-
-On `q.stop()`, the plugin closes the WAL file. The `shutdownTimeout` option controls how long to wait for in-flight jobs to complete before force-stopping.
+> The former `@psyqueue/plugin-crash-recovery` (WAL file) was removed: it marked jobs completed before their handler ran, so it could not recover crashed jobs.

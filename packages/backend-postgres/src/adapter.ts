@@ -155,6 +155,27 @@ INSERT INTO psyqueue_jobs (
 )
 `
 
+/**
+ * Builds the UPDATE for a nack. With a completion token, it only applies if the
+ * job is still active and owned by that token (a reclaimed job is left alone).
+ */
+function nackQuery(jobId: string, opts?: NackOpts): { sql: string; params: unknown[] } {
+  const token = opts?.completionToken ?? null
+  const guard = `AND ($3::text IS NULL OR (status = 'active' AND completion_token = $3))`
+  const error = opts?.reason ? JSON.stringify({ message: opts.reason, retryable: false }) : null
+  if (opts?.deadLetter) {
+    return { sql: `UPDATE psyqueue_jobs SET status = 'dead', error = $1::jsonb WHERE id = $2 ${guard}`, params: [error, jobId, token] }
+  }
+  if (opts?.requeue === false) {
+    return { sql: `UPDATE psyqueue_jobs SET status = 'failed', error = $1::jsonb WHERE id = $2 ${guard}`, params: [error, jobId, token] }
+  }
+  const runAt = opts?.delay ? new Date(Date.now() + opts.delay) : null
+  return {
+    sql: `UPDATE psyqueue_jobs SET status = 'pending', run_at = $1, attempt = attempt + 1, completion_token = NULL WHERE id = $2 ${guard}`,
+    params: [runAt, jobId, token],
+  }
+}
+
 export class PostgresBackendAdapter implements BackendAdapter {
   readonly name = 'postgres'
   readonly type = 'postgres'
@@ -256,7 +277,7 @@ export class PostgresBackendAdapter implements BackendAdapter {
         const token = randomUUID()
         await client.query(
           `UPDATE psyqueue_jobs
-           SET status = 'active', started_at = $1, completion_token = $2
+           SET status = 'active', started_at = $1, completion_token = $2, heartbeat_at = NOW()
            WHERE id = $3`,
           [now, token, row.id],
         )
@@ -279,68 +300,53 @@ export class PostgresBackendAdapter implements BackendAdapter {
     }
   }
 
-  async ack(jobId: string, completionToken?: string): Promise<AckResult> {
+  async ack(jobId: string, completionToken?: string, resultJson?: string): Promise<AckResult> {
     const pool = this.getPool()
     const now = new Date()
+    const result = resultJson ?? null
 
-    let result
     if (completionToken) {
-      result = await pool.query(
+      const res = await pool.query(
         `UPDATE psyqueue_jobs
-         SET status = 'completed', completed_at = $1
-         WHERE id = $2 AND completion_token = $3`,
-        [now, jobId, completionToken],
+         SET status = 'completed', completed_at = $1, result = COALESCE($4::jsonb, result)
+         WHERE id = $2 AND completion_token = $3 AND status = 'active'`,
+        [now, jobId, completionToken, result],
       )
-      if (result.rowCount === 0) {
-        return { alreadyCompleted: true }
-      }
-    } else {
-      result = await pool.query(
-        `UPDATE psyqueue_jobs
-         SET status = 'completed', completed_at = $1
-         WHERE id = $2`,
-        [now, jobId],
-      )
+      return { alreadyCompleted: res.rowCount === 0 }
     }
 
+    await pool.query(
+      `UPDATE psyqueue_jobs
+       SET status = 'completed', completed_at = $1, result = COALESCE($3::jsonb, result)
+       WHERE id = $2`,
+      [now, jobId, result],
+    )
     return { alreadyCompleted: false }
   }
 
   async nack(jobId: string, opts?: NackOpts): Promise<void> {
-    const pool = this.getPool()
+    const { sql, params } = nackQuery(jobId, opts)
+    await this.getPool().query(sql, params)
+  }
 
-    if (opts?.deadLetter) {
-      const errorJson = opts.reason
-        ? JSON.stringify({ message: opts.reason, retryable: false })
-        : null
-      await pool.query(
-        `UPDATE psyqueue_jobs SET status = 'dead', error = $1::jsonb WHERE id = $2`,
-        [errorJson, jobId],
-      )
-      return
-    }
+  async recoverStaleJobs(queue: string, maxAgeMs: number): Promise<string[]> {
+    const res = await this.getPool().query<{ id: string }>(
+      `UPDATE psyqueue_jobs SET status = 'pending', completion_token = NULL
+       WHERE queue = $1 AND status = 'active'
+         AND COALESCE(heartbeat_at, 'epoch'::timestamptz) < NOW() - ($2::double precision * INTERVAL '1 millisecond')
+       RETURNING id`,
+      [queue, maxAgeMs],
+    )
+    return res.rows.map(r => r.id)
+  }
 
-    if (opts?.requeue === false) {
-      const errorJson = opts.reason
-        ? JSON.stringify({ message: opts.reason, retryable: false })
-        : null
-      await pool.query(
-        `UPDATE psyqueue_jobs SET status = 'failed', error = $1::jsonb WHERE id = $2`,
-        [errorJson, jobId],
-      )
-      return
-    }
-
-    // Default: requeue
-    let runAt: Date | null = null
-    if (opts?.delay) {
-      runAt = new Date(Date.now() + opts.delay)
-    }
-    await pool.query(
-      `UPDATE psyqueue_jobs
-       SET status = 'pending', run_at = $1, attempt = attempt + 1
-       WHERE id = $2`,
-      [runAt, jobId],
+  async extendLeases(_queue: string, leases: Array<{ jobId: string; token: string }>): Promise<void> {
+    if (leases.length === 0) return
+    await this.getPool().query(
+      `UPDATE psyqueue_jobs AS j SET heartbeat_at = NOW()
+       FROM unnest($1::text[], $2::text[]) AS l(id, token)
+       WHERE j.id = l.id AND j.completion_token = l.token AND j.status = 'active'`,
+      [leases.map(l => l.jobId), leases.map(l => l.token)],
     )
   }
 
@@ -546,32 +552,8 @@ export class PostgresBackendAdapter implements BackendAdapter {
           break
         }
         case 'nack': {
-          if (op.opts?.deadLetter) {
-            const errorJson = op.opts.reason
-              ? JSON.stringify({ message: op.opts.reason, retryable: false })
-              : null
-            await client.query(
-              `UPDATE psyqueue_jobs SET status = 'dead', error = $1::jsonb WHERE id = $2`,
-              [errorJson, op.jobId],
-            )
-          } else if (op.opts?.requeue === false) {
-            const errorJson = op.opts.reason
-              ? JSON.stringify({ message: op.opts.reason, retryable: false })
-              : null
-            await client.query(
-              `UPDATE psyqueue_jobs SET status = 'failed', error = $1::jsonb WHERE id = $2`,
-              [errorJson, op.jobId],
-            )
-          } else {
-            let runAt: Date | null = null
-            if (op.opts?.delay) {
-              runAt = new Date(Date.now() + op.opts.delay)
-            }
-            await client.query(
-              `UPDATE psyqueue_jobs SET status = 'pending', run_at = $1, attempt = attempt + 1 WHERE id = $2`,
-              [runAt, op.jobId],
-            )
-          }
+          const { sql, params } = nackQuery(op.jobId, op.opts)
+          await client.query(sql, params)
           break
         }
         case 'update': {

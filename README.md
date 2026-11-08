@@ -72,7 +72,6 @@ await q.stop()
 | Circuit Breaker | `@psyqueue/plugin-circuit-breaker` | Protect downstream services |
 | Backpressure | `@psyqueue/plugin-backpressure` | Adaptive load shedding |
 | Exactly-Once | `@psyqueue/plugin-exactly-once` | Idempotency key deduplication |
-| Crash Recovery | `@psyqueue/plugin-crash-recovery` | WAL-based recovery of orphaned jobs |
 | OTel Tracing | `@psyqueue/plugin-otel-tracing` | OpenTelemetry distributed tracing |
 | Metrics | `@psyqueue/plugin-metrics` | Prometheus metrics (prom-client) |
 | Audit Log | `@psyqueue/plugin-audit-log` | Tamper-evident hash-chained audit trail |
@@ -163,12 +162,13 @@ PsyQueue ships with three presets that list recommended plugin combinations.
 
 ```typescript
 const { queue, config } = PsyQueue.from('lite')
-// config.plugins: ['backend-sqlite', 'scheduler', 'crash-recovery']
+// config.plugins: ['backend-sqlite', 'scheduler']
 
 queue
   .use(sqlite({ path: './jobs.db' }))
   .use(scheduler())
-  .use(crashRecovery())
+// Crash recovery is built in: workers renew a lease on each job, and jobs
+// whose worker died are reclaimed after `leaseMs` (default 60s).
 ```
 
 ### SaaS -- Multi-tenant applications
@@ -211,7 +211,7 @@ const { queue, config } = PsyQueue.from('enterprise')
 - [Scheduling](docs/plugins/scheduling.md) -- Delayed jobs, cron, deadline priority
 - [Workflows](docs/plugins/workflows.md) -- DAG workflows and Saga compensation
 - [Multi-Tenancy](docs/plugins/tenancy.md) -- Tiers, fair scheduling, rate limiting
-- [Reliability](docs/plugins/reliability.md) -- Circuit breaker, backpressure, exactly-once, crash recovery
+- [Reliability](docs/plugins/reliability.md) -- Circuit breaker, backpressure, idempotent enqueue, crash recovery
 - [Observability](docs/plugins/observability.md) -- OTel tracing, Prometheus metrics, audit log, dashboard
 - [Transport](docs/plugins/transport.md) -- gRPC and HTTP remote workers
 - [Advanced](docs/plugins/advanced.md) -- Chaos testing, offline sync, job fusion, schema versioning

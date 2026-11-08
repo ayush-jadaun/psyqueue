@@ -1,9 +1,9 @@
 import type {
   BackendAdapter,
-  DequeuedJob,
   EnqueueOpts,
   EventBusInterface,
   Job,
+  JobContext,
   JobFilter,
   JobHandler,
   HandlerOpts,
@@ -22,12 +22,8 @@ import { createJob } from './job.js'
 import { createContext } from './context.js'
 import { PsyQueueError } from './errors.js'
 import { WorkerPool } from './worker.js'
+import { runJob, type RegisteredHandler, type RunnerDeps } from './job-runner.js'
 import { presets, type PresetConfig } from './presets.js'
-
-interface RegisteredHandler {
-  handler: JobHandler
-  opts: HandlerOpts
-}
 
 export class PsyQueue {
   private readonly eventBus: EventBus
@@ -196,9 +192,13 @@ export class PsyQueue {
     if (!this.coreMiddlewareRegistered) {
       this.coreMiddlewareRegistered = true
 
-      // Core enqueue middleware: persist the job to backend
+      // Core enqueue middleware: persist the job. enqueue() and enqueueBulk()
+      // supply how (single insert vs. collect for one bulk insert). Plugins that
+      // short-circuit (workflow start, job fusion, dedup) never reach this.
       this.middlewarePipeline.add('enqueue', async (c, next) => {
-        await this.getBackend().enqueue(c.job)
+        const persist = c.state['_persist'] as (job: Job) => Promise<void>
+        await persist(c.job)
+        c.state['_persisted'] = true
         await next()
       }, { phase: 'execute', pluginName: '__core__' })
     }
@@ -228,32 +228,47 @@ export class PsyQueue {
   async enqueue(name: string, payload: unknown, opts?: EnqueueOpts): Promise<string> {
     const backend = this.getBackend()
     const job = createJob(name, payload, opts)
-
-    const ctx = createContext(job, 'enqueue', {
-      enqueue: (n, p, o) => this.enqueue(n, p, o),
-      updateJob: async (id, updates) => {
-        await backend.atomic([{ type: 'update', jobId: id, updates }])
-        Object.assign(job, updates)
-      },
-    })
-
-    await this.middlewarePipeline.run('enqueue', ctx)
-
-    this.eventBus.emit('job:enqueued', { jobId: job.id, queue: job.queue, name: job.name })
+    const ctx = await this.runEnqueuePipeline(job, async (j) => { await backend.enqueue(j) })
+    if (ctx.state['_persisted']) {
+      this.eventBus.emit('job:enqueued', { jobId: job.id, queue: job.queue, name: job.name })
+    }
     return job.id
   }
 
   /**
-   * Bulk enqueue jobs atomically via backend.
+   * Enqueue many jobs. Each job goes through the enqueue pipeline (so rate
+   * limits, dedup and other plugins apply), then all jobs that reach the
+   * persist step are written in one atomic backend call.
+   * Returns one id per item, in order (a plugin may substitute an id, e.g.
+   * the id of an existing duplicate).
    */
   async enqueueBulk(items: Array<{ name: string; payload: unknown; opts?: EnqueueOpts }>): Promise<string[]> {
     const backend = this.getBackend()
-    const jobs = items.map(item => createJob(item.name, item.payload, item.opts))
-    const ids = await backend.enqueueBulk(jobs)
-    for (const job of jobs) {
+    const batch: Job[] = []
+    const jobs: Job[] = []
+    for (const item of items) {
+      const job = createJob(item.name, item.payload, item.opts)
+      jobs.push(job)
+      await this.runEnqueuePipeline(job, async (j) => { batch.push(j) })
+    }
+    if (batch.length > 0) await backend.enqueueBulk(batch)
+    for (const job of batch) {
       this.eventBus.emit('job:enqueued', { jobId: job.id, queue: job.queue, name: job.name })
     }
-    return ids
+    return jobs.map(j => j.id)
+  }
+
+  private async runEnqueuePipeline(job: Job, persist: (job: Job) => Promise<void>): Promise<JobContext> {
+    const backend = this.getBackend()
+    const ctx = createContext(job, 'enqueue', {
+      enqueue: (n, p, o) => this.enqueue(n, p, o),
+      updateJob: async (id, updates) => {
+        await backend.atomic([{ type: 'update', jobId: id, updates }])
+      },
+    })
+    ctx.state['_persist'] = persist
+    await this.middlewarePipeline.run('enqueue', ctx)
+    return ctx
   }
 
   /**
@@ -262,187 +277,37 @@ export class PsyQueue {
    */
   async processNext(queue: string): Promise<boolean> {
     const backend = this.getBackend()
-    const dequeued = await backend.dequeue(queue, 1)
+    // Promote due delayed jobs (e.g. backed-off retries) so they're visible
+    try { await backend.pollScheduled(new Date(), 20) } catch { /* best-effort */ }
+    const [job] = await backend.dequeue(queue, 1)
+    if (!job) return false
+    await runJob(job, this.runnerDeps())
+    return true
+  }
 
-    if (dequeued.length === 0) {
-      return false
-    }
-
-    const dequeuedJob = dequeued[0]! as DequeuedJob
-    const job = dequeuedJob as Job
-    const completionToken = dequeuedJob.completionToken
-
-    const registered = this.handlers.get(job.name)
-    if (!registered) {
-      // No handler registered for this job name — nack with dead letter
-      await backend.nack(job.id, {
-        requeue: false,
-        deadLetter: true,
-        reason: `No handler registered for job "${job.name}"`,
-      })
-      this.eventBus.emit('job:failed', {
-        jobId: job.id,
-        queue: job.queue,
-        name: job.name,
-        error: `No handler registered for job "${job.name}"`,
-      })
-      return true
-    }
-
-    const ctx = createContext(job, 'process', {
-      enqueue: (n, p, o) => this.enqueue(n, p, o),
-      updateJob: async (id, updates) => {
-        await backend.atomic([{ type: 'update', jobId: id, updates }])
-        Object.assign(job, updates)
-      },
-    })
-
-    this.eventBus.emit('job:started', { jobId: job.id, queue: job.queue, name: job.name })
-
-    // Register the job handler as a finalize middleware so user/plugin middleware runs first
-    const handlerMiddleware: Middleware = async (c, next) => {
-      const result = await registered.handler(c)
-      c.job.result = result
-      await next()
-    }
-
-    try {
-      // Run the process pipeline
-      await this.middlewarePipeline.run('process', ctx)
-
-      // Run the handler
-      await handlerMiddleware(ctx, async () => {})
-
-      // Check if middleware requested dead letter
-      if (ctx.state['_deadLetter']) {
-        await backend.nack(job.id, {
-          requeue: false,
-          deadLetter: true,
-          reason: String(ctx.state['_deadLetter']),
-        })
-        this.eventBus.emit('job:dead', {
-          jobId: job.id,
-          queue: job.queue,
-          name: job.name,
-          reason: ctx.state['_deadLetter'],
-        })
-        return true
-      }
-
-      // Check if middleware requested requeue
-      if (ctx.state['_requeue']) {
-        const requeueOpts = ctx.state['_requeue'] as { delay?: number; priority?: number }
-        await backend.nack(job.id, {
-          requeue: true,
-          delay: requeueOpts.delay,
-        })
-        this.eventBus.emit('job:requeued', { jobId: job.id, queue: job.queue, name: job.name })
-        return true
-      }
-
-      const resultJson = job.result !== undefined ? JSON.stringify(job.result) : undefined
-      await backend.ack(job.id, completionToken, resultJson)
-      this.eventBus.emit('job:completed', {
-        jobId: job.id,
-        queue: job.queue,
-        name: job.name,
-        result: job.result,
-      })
-      return true
-    } catch (err) {
-      // Failure path
-      const error = err instanceof Error ? err : new Error(String(err))
-
-      // Classify error
-      const category = this.classifyError(error)
-      const retryable = category !== 'fatal' && category !== 'validation'
-
-      const jobError = {
-        message: error.message,
-        stack: error.stack,
-        category,
-        retryable,
-      }
-
-      // Check retries
-      if (retryable && job.attempt < job.maxRetries) {
-        const delay = this.calculateBackoff(job)
-
-        if (delay > 0 && delay <= 1000) {
-          // Short delay: wait in-process then requeue immediately.
-          // This avoids needing the scheduler plugin for quick retries.
-          await new Promise(r => setTimeout(r, delay))
-          await backend.nack(job.id, { requeue: true, delay: 0 })
-        } else if (delay > 1000) {
-          // Long delay: use scheduled set. Warn if no scheduler.
-          await backend.nack(job.id, { requeue: true, delay })
-          // Try to promote immediately from scheduled set (self-heal)
-          try { await backend.pollScheduled(new Date(Date.now() + delay + 100), 1) } catch {}
-        } else {
-          await backend.nack(job.id, { requeue: true, delay: 0 })
-        }
-
-        this.eventBus.emit('job:retry', {
-          jobId: job.id,
-          queue: job.queue,
-          name: job.name,
-          attempt: job.attempt,
-          delay,
-          error: error.message,
-        })
-      } else {
-        // Exhausted retries or non-retryable — dead letter
-        await backend.nack(job.id, {
-          requeue: false,
-          deadLetter: true,
-          reason: error.message,
-        })
-
-        this.eventBus.emit('job:dead', {
-          jobId: job.id,
-          queue: job.queue,
-          name: job.name,
-          error: jobError,
-          attempt: job.attempt,
-        })
-      }
-
-      this.eventBus.emit('job:failed', {
-        jobId: job.id,
-        queue: job.queue,
-        name: job.name,
-        error: error.message,
-      })
-
-      return true
+  private runnerDeps(): RunnerDeps {
+    return {
+      backend: this.getBackend(),
+      pipeline: this.middlewarePipeline,
+      handlers: this.handlers,
+      eventBus: this.eventBus,
+      enqueue: (name, payload, o) => this.enqueue(name, payload, o),
+      classifyError: (error) => this.classifyError(error),
+      calculateBackoff: (job) => this.calculateBackoff(job),
     }
   }
 
   /**
    * Start a worker pool for the given queue. Jobs are automatically dequeued
    * and processed using registered handlers.
-   * Uses blocking reads (BRPOPLPUSH) for Redis, polling for other backends.
+   * Uses blocking reads (BLMOVE) for Redis, polling for other backends.
    */
   startWorker(queue: string, opts: WorkerOpts = {}): void {
     if (this.workers.has(queue)) {
       throw new PsyQueueError('WORKER_EXISTS', `Worker already running for queue "${queue}"`)
     }
 
-    const backend = this.getBackend()
-
-    const pool = new WorkerPool(
-      queue,
-      backend,
-      this.middlewarePipeline,
-      this.handlers,
-      this.eventBus,
-      opts,
-      {
-        enqueue: (name, payload, o) => this.enqueue(name, payload, o),
-        classifyError: (error) => this.classifyError(error),
-        calculateBackoff: (job) => this.calculateBackoff(job),
-      },
-    )
+    const pool = new WorkerPool(queue, this.runnerDeps(), opts)
 
     this.workers.set(queue, pool)
     pool.start()

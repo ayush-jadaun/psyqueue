@@ -23,7 +23,6 @@
 import { PsyQueue, RateLimitError } from '@psyqueue/core'
 import { sqlite } from '@psyqueue/backend-sqlite'
 import { scheduler } from '@psyqueue/plugin-scheduler'
-import { crashRecovery } from '@psyqueue/plugin-crash-recovery'
 import { tenancy } from '@psyqueue/plugin-tenancy'
 import { workflows, workflow } from '@psyqueue/plugin-workflows'
 import { saga } from '@psyqueue/plugin-saga'
@@ -70,14 +69,8 @@ async function main() {
   q.use(scheduler({ pollInterval: 500, cronLockTtl: 60_000 }))
 
   // ── 3. Crash recovery ─────────────────────────────────────────────────────
-  // Writes a WAL file before/after each job. On startup, re-queues any jobs
-  // that were 'active' when the process crashed.
-  q.use(crashRecovery({
-    walPath: '/tmp/psyqueue-prod.wal',
-    autoRecover: true,
-    onRecoverActiveJob: 'requeue',
-    shutdownTimeout: 15_000,
-  }))
+  // Built in: workers renew a lease on every job they hold; if a worker dies,
+  // its jobs are reclaimed after `leaseMs` (see startWorker options below).
 
   // ── 4. Multi-tenancy ──────────────────────────────────────────────────────
   q.use(tenancy({

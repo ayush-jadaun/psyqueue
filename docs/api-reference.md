@@ -38,14 +38,14 @@ static from(
 
 ```typescript
 const { queue, config } = PsyQueue.from('lite')
-// config.plugins = ['backend-sqlite', 'scheduler', 'crash-recovery']
+// config.plugins = ['backend-sqlite', 'scheduler']
 ```
 
 **Available presets:**
 
 | Preset | Plugins |
 |--------|---------|
-| `lite` | `backend-sqlite`, `scheduler`, `crash-recovery` |
+| `lite` | `backend-sqlite`, `scheduler` |
 | `saas` | `backend-redis`, `tenancy`, `workflows`, `saga`, `circuit-breaker`, `backpressure`, `dashboard`, `metrics` |
 | `enterprise` | `backend-postgres`, `tenancy`, `workflows`, `saga`, `exactly-once`, `audit-log`, `otel-tracing`, `schema-versioning`, `circuit-breaker`, `backpressure`, `dashboard`, `metrics` |
 
@@ -95,7 +95,6 @@ Register a plugin. Returns `this` for chaining.
 ```typescript
 q.use(sqlite({ path: ':memory:' }))
  .use(scheduler())
- .use(crashRecovery())
 ```
 
 The plugin's `init()` method is called immediately during `use()`. Throws `DUPLICATE_PLUGIN` if a plugin with the same name is already registered.
@@ -671,5 +670,5 @@ The presets configuration object:
 import { presets } from '@psyqueue/core'
 
 console.log(presets.lite.plugins)
-// ['backend-sqlite', 'scheduler', 'crash-recovery']
+// ['backend-sqlite', 'scheduler']
 ```

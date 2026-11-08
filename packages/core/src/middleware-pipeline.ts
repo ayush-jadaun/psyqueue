@@ -23,9 +23,17 @@ export class MiddlewarePipeline {
     })
   }
 
-  async run(event: LifecycleEvent, ctx: JobContext): Promise<void> {
-    const chain = this.chains.get(event)
-    if (!chain || chain.length === 0) return
+  /**
+   * Run the chain for `event`. If `terminal` is given it runs as the innermost
+   * step, so middleware that awaits next() wraps it (timing, tracing, error
+   * handling). Middleware that returns without calling next() skips it.
+   */
+  async run(event: LifecycleEvent, ctx: JobContext, terminal?: () => Promise<void>): Promise<void> {
+    const chain = this.chains.get(event) ?? []
+    if (chain.length === 0) {
+      if (terminal) await terminal()
+      return
+    }
     const sorted = [...chain].sort((a, b) => {
       const phaseA = PHASE_ORDER.indexOf(a.phase)
       const phaseB = PHASE_ORDER.indexOf(b.phase)
@@ -33,7 +41,7 @@ export class MiddlewarePipeline {
       return a.index - b.index
     })
     const dispatch = (i: number): Promise<void> => {
-      if (i >= sorted.length) return Promise.resolve()
+      if (i >= sorted.length) return terminal ? terminal() : Promise.resolve()
       const mw = sorted[i]!
       return mw.fn(ctx, () => dispatch(i + 1))
     }

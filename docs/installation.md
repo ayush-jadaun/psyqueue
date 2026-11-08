@@ -58,7 +58,6 @@ npm install @psyqueue/plugin-job-fusion          # Auto-batch identical jobs
 ### Reliability
 
 ```bash
-npm install @psyqueue/plugin-crash-recovery      # Write-ahead log + recovery
 npm install @psyqueue/plugin-exactly-once        # Idempotency key dedup
 npm install @psyqueue/plugin-circuit-breaker     # Per-dependency circuit breakers
 npm install @psyqueue/plugin-backpressure        # Adaptive load shedding
@@ -119,7 +118,7 @@ Instead of picking plugins one by one, use presets:
 ### Lite (single server, zero infra)
 
 ```bash
-npm install @psyqueue/core @psyqueue/backend-sqlite @psyqueue/plugin-scheduler @psyqueue/plugin-crash-recovery
+npm install @psyqueue/core @psyqueue/backend-sqlite @psyqueue/plugin-scheduler
 ```
 
 ```ts
@@ -284,7 +283,6 @@ console.log('PsyQueue is working!')
 | `@psyqueue/plugin-circuit-breaker` | Circuit breakers | `npm i @psyqueue/plugin-circuit-breaker` |
 | `@psyqueue/plugin-backpressure` | Backpressure | `npm i @psyqueue/plugin-backpressure` |
 | `@psyqueue/plugin-exactly-once` | Idempotency | `npm i @psyqueue/plugin-exactly-once` |
-| `@psyqueue/plugin-crash-recovery` | WAL recovery | `npm i @psyqueue/plugin-crash-recovery` |
 | `@psyqueue/plugin-otel-tracing` | OTel tracing | `npm i @psyqueue/plugin-otel-tracing` |
 | `@psyqueue/plugin-metrics` | Prometheus | `npm i @psyqueue/plugin-metrics` |
 | `@psyqueue/plugin-audit-log` | Audit log | `npm i @psyqueue/plugin-audit-log` |

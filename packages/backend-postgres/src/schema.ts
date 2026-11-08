@@ -54,6 +54,9 @@ CREATE INDEX IF NOT EXISTS idx_psyqueue_jobs_workflow
 CREATE INDEX IF NOT EXISTS idx_psyqueue_jobs_status
   ON psyqueue_jobs (status);
 
+-- Lease heartbeat (added after initial release; ADD COLUMN IF NOT EXISTS migrates old DBs)
+ALTER TABLE psyqueue_jobs ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMPTZ;
+
 CREATE TABLE IF NOT EXISTS psyqueue_locks (
   key TEXT PRIMARY KEY,
   expires_at TIMESTAMPTZ NOT NULL,

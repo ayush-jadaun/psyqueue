@@ -12,7 +12,7 @@ export interface PresetConfig {
 
 export const presets: Record<string, PresetConfig> = {
   lite: {
-    plugins: ['backend-sqlite', 'scheduler', 'crash-recovery'],
+    plugins: ['backend-sqlite', 'scheduler'],
   },
   saas: {
     plugins: [

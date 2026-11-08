@@ -66,14 +66,12 @@ describe('Delayed Jobs', () => {
   // ------------------------------------------------------------------ //
   // 5. Job with runAt = now (or slightly in the past) is treated as due //
   // ------------------------------------------------------------------ //
-  it('treats a job with runAt in the past as due after polling', async () => {
+  it('runs a job whose runAt is already in the past without waiting for the poller', async () => {
     const justPast = new Date(Date.now() - 10)
     await q.enqueue('test', {}, { runAt: justPast })
-    // Before polling: scheduled, not yet pending
-    expect(await q.processNext('test')).toBe(false)
-    // After polling interval — poller moves it to pending
-    await new Promise(r => setTimeout(r, 120))
+    // processNext promotes due scheduled jobs itself
     expect(await q.processNext('test')).toBe(true)
+    expect(await q.processNext('test')).toBe(false)
   })
 
   // ------------------------------------------------------------------ //

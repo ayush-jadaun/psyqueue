@@ -54,7 +54,6 @@ npx tsx examples/16-full-production/index.ts
 |--------|--------|-----------------|
 | SQLite backend | `@psyqueue/backend-sqlite` | In-process durable storage |
 | Scheduler | `@psyqueue/plugin-scheduler` | `runAt` delayed jobs and cron |
-| Crash recovery | `@psyqueue/plugin-crash-recovery` | WAL-based restart recovery |
 | Tenancy | `@psyqueue/plugin-tenancy` | Per-tenant rate limits and fair scheduling |
 | Workflows | `@psyqueue/plugin-workflows` | DAG workflow orchestration |
 | Saga | `@psyqueue/plugin-saga` | Automatic saga compensation |

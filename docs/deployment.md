@@ -91,20 +91,18 @@ process.on('SIGTERM', async () => {
 Best for: multi-server, high throughput, distributed workers.
 
 ```bash
-npm install @psyqueue/core @psyqueue/backend-redis @psyqueue/plugin-scheduler @psyqueue/plugin-crash-recovery @psyqueue/dashboard
+npm install @psyqueue/core @psyqueue/backend-redis @psyqueue/plugin-scheduler @psyqueue/dashboard
 ```
 
 ```ts
 import { PsyQueue } from '@psyqueue/core'
 import { redis } from '@psyqueue/backend-redis'
 import { scheduler } from '@psyqueue/plugin-scheduler'
-import { crashRecovery } from '@psyqueue/plugin-crash-recovery'
 import { dashboard } from '@psyqueue/dashboard'
 
 const q = new PsyQueue()
 q.use(redis({ url: process.env.REDIS_URL }))
 q.use(scheduler())
-q.use(crashRecovery({ walPath: './data/psyqueue.wal' }))
 q.use(dashboard({ port: 4000, getBackend: () => (q as any).backend }))
 
 q.handle('order.process', async (ctx) => { /* ... */ })

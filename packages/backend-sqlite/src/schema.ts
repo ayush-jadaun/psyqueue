@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   completion_token TEXT,
   created_at TEXT NOT NULL,
   started_at TEXT,
-  completed_at TEXT
+  completed_at TEXT,
+  heartbeat_at INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_dequeue ON jobs (queue, status, priority DESC, created_at ASC);

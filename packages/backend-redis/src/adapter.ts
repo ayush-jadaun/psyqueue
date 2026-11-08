@@ -365,7 +365,7 @@ return {1, next_id, next_token, cjson.encode(data)}
 // For requeue: pushes job ID back to the ready list (RPUSH) or to pending sorted set if delayed
 // KEYS[1] = hash key, KEYS[2] = key prefix
 // ARGV[1] = jobId, ARGV[2] = mode (requeue|dead|fail), ARGV[3] = error json
-// ARGV[4] = delay ms, ARGV[5] = now ms
+// ARGV[4] = delay ms, ARGV[5] = now ms, ARGV[6] = completion token ('' = unguarded)
 export const NACK_SCRIPT = `
 local hash_key = KEYS[1]
 local prefix = KEYS[2]
@@ -377,6 +377,13 @@ local now_ms = tonumber(ARGV[5])
 
 local queue = redis.call('HGET', hash_key, 'queue')
 if not queue then return 0 end
+
+-- Guarded nack: only the worker that still owns the job may change it
+local token = ARGV[6] or ''
+if token ~= '' then
+  local f = redis.call('HMGET', hash_key, 'status', 'completion_token')
+  if f[1] ~= 'active' or f[2] ~= token then return 0 end
+end
 
 redis.call('SREM', prefix .. queue .. ':active', job_id)
 
@@ -569,7 +576,7 @@ for _, job_id in ipairs(members) do
           -- This job is stale — move back to pending
           redis.call('SREM', active_key, job_id)
           local priority = tonumber(redis.call('HGET', hash_key, 'priority') or '0')
-          redis.call('HSET', hash_key, 'status', 'pending', 'started_at', '', '_started_ms', '')
+          redis.call('HSET', hash_key, 'status', 'pending', 'started_at', '', '_started_ms', '', 'completion_token', '')
           if priority > 0 then
             local score = (-priority * 10000000000000) + now_ms
             redis.call('ZADD', priority_key, score, job_id)
@@ -889,6 +896,7 @@ export class RedisBackendAdapter implements BackendAdapter {
       error,
       String(delay),
       String(Date.now()),
+      opts?.completionToken ?? '',
     )
   }
 

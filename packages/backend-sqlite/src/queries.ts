@@ -24,40 +24,52 @@ export const SELECT_JOB_BY_ID = `SELECT * FROM jobs WHERE id = ?`
 
 export const SELECT_FOR_DEQUEUE = `
 SELECT id FROM jobs
-WHERE queue = ? AND status = 'pending'
+WHERE queue = ? AND status = 'pending' AND (run_at IS NULL OR run_at <= ?)
 ORDER BY priority DESC, created_at ASC
 LIMIT ?
 `
 
 export const UPDATE_DEQUEUE = `
 UPDATE jobs
-SET status = 'active', started_at = ?, completion_token = ?
+SET status = 'active', started_at = ?, completion_token = ?, heartbeat_at = ?
 WHERE id = ?
 `
 
 export const ACK_WITH_TOKEN = `
-UPDATE jobs SET status = 'completed', completed_at = ?
-WHERE id = ? AND completion_token = ?
+UPDATE jobs SET status = 'completed', completed_at = ?, result = COALESCE(?, result)
+WHERE id = ? AND completion_token = ? AND status = 'active'
 `
 
 export const ACK_WITHOUT_TOKEN = `
-UPDATE jobs SET status = 'completed', completed_at = ?
+UPDATE jobs SET status = 'completed', completed_at = ?, result = COALESCE(?, result)
 WHERE id = ?
 `
 
 export const NACK_DEAD = `
-UPDATE jobs SET status = 'dead', error = ?
-WHERE id = ?
+UPDATE jobs SET status = 'dead', error = @error
+WHERE id = @id AND (@token IS NULL OR (status = 'active' AND completion_token = @token))
 `
 
 export const NACK_FAILED = `
-UPDATE jobs SET status = 'failed', error = ?
-WHERE id = ?
+UPDATE jobs SET status = 'failed', error = @error
+WHERE id = @id AND (@token IS NULL OR (status = 'active' AND completion_token = @token))
 `
 
 export const NACK_REQUEUE = `
-UPDATE jobs SET status = 'pending', run_at = ?, attempt = attempt + 1
-WHERE id = ?
+UPDATE jobs SET status = 'pending', run_at = @run_at, attempt = attempt + 1, completion_token = NULL
+WHERE id = @id AND (@token IS NULL OR (status = 'active' AND completion_token = @token))
+`
+
+// Reclaim jobs whose worker stopped renewing its lease (crashed/hung).
+export const RECOVER_STALE = `
+UPDATE jobs SET status = 'pending', completion_token = NULL
+WHERE queue = ? AND status = 'active' AND COALESCE(heartbeat_at, 0) < ?
+RETURNING id
+`
+
+export const EXTEND_LEASE = `
+UPDATE jobs SET heartbeat_at = ?
+WHERE id = ? AND status = 'active' AND completion_token = ?
 `
 
 export const POLL_SCHEDULED = `
