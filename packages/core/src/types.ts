@@ -182,6 +182,9 @@ export interface BackendAdapter {
    */
   blockingDequeue?(queue: string, timeoutMs: number): Promise<DequeuedJob[]>
 
+  /** Abort in-flight blocking dequeues (they return []), so workers stop promptly. */
+  interruptBlocking?(): void
+
   /**
    * Non-blocking batch pop — grab up to `count` jobs immediately.
    * Called after blockingDequeue unblocks to grab more jobs in the same cycle.

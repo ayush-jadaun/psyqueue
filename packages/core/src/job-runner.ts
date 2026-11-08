@@ -122,11 +122,14 @@ async function handleFailure(err: unknown, ctx: JobContext, token: string | unde
   const category = deps.classifyError(error)
   const retryable = category !== 'fatal' && category !== 'validation'
   const jobError: JobError = { message: error.message, stack: error.stack, category, retryable }
+  const willRetry = retryable && job.attempt < job.maxRetries
+  // The fail stage runs before the nack, and knows whether this was the last attempt
   ctx.state['error'] = jobError
+  ctx.state['willRetry'] = willRetry
 
   await runSideStage(deps, 'fail', ctx)
 
-  if (retryable && job.attempt < job.maxRetries) {
+  if (willRetry) {
     const delay = deps.calculateBackoff(job)
     if (delay > 0 && delay <= 1000) {
       // Short delay: wait in-process (the lease heartbeat keeps the job ours),

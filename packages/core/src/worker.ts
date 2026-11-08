@@ -93,6 +93,8 @@ export class WorkerPool {
       resolve()
     }
     this.pendingResolves = []
+    // Don't wait out a blocking dequeue's timeout
+    this.backend.interruptBlocking?.()
     // Wait for dequeue loop to exit
     if (this.loopPromise) await this.loopPromise
     // Wait for all in-flight handlers to complete

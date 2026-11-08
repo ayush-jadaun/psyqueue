@@ -439,7 +439,7 @@ async function main() {
   console.log(`  Circuit breaker state: ${breaker?.currentState}`)
 
   // Workflow states
-  const instances = wfPlugin.engine.store.list()
+  const instances = await wfPlugin.engine.store.list()
   for (const inst of instances) {
     console.log(`  Workflow ${inst.id.slice(0, 8)}: ${inst.status}`)
   }

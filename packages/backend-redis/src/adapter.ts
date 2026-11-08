@@ -134,9 +134,10 @@ export function deserializeJobFromHash(hash: JobHash): Job {
       : (hash['deadline'] ? new Date(hash['deadline']) : undefined),
     result: hash['result'] ? JSON.parse(hash['result']) : (ext?.result ?? undefined),
     error: hash['error'] ? JSON.parse(hash['error']) as JobError : (ext?.error as JobError | undefined),
-    meta: ext
-      ? ((ext.meta ?? {}) as Record<string, unknown>)
-      : (JSON.parse(hash['meta'] ?? '{}') as Record<string, unknown>),
+    // updateJob() writes meta top-level too, so it takes precedence over _ext
+    meta: hash['meta']
+      ? (JSON.parse(hash['meta']) as Record<string, unknown>)
+      : ((ext?.meta ?? {}) as Record<string, unknown>),
     createdAt: new Date(hash['created_at'] ?? new Date().toISOString()),
     startedAt: hash['started_at'] ? new Date(hash['started_at']) : undefined,
     completedAt: hash['completed_at'] ? new Date(hash['completed_at']) : undefined,
@@ -628,8 +629,11 @@ export class RedisBackendAdapter implements BackendAdapter {
   readonly supportsBlocking = true
 
   private client: any = null
-  /** Single blocking client -- created once, reused for all BLMOVE calls */
-  private blockingClient: any = null
+  /**
+   * Single blocking client, shared by all BLMOVE calls. Held as a promise so
+   * concurrent first calls share one connection instead of racing to create two.
+   */
+  private blockingClient: Promise<any> | null = null
   private readonly opts: RedisAdapterOpts
   private readonly prefix: string
 
@@ -711,8 +715,9 @@ export class RedisBackendAdapter implements BackendAdapter {
   async disconnect(): Promise<void> {
     // Close the single blocking client first
     if (this.blockingClient) {
-      await this.blockingClient.quit().catch(() => {})
+      const pending = this.blockingClient
       this.blockingClient = null
+      await pending.then(c => c.quit()).catch(() => {})
     }
 
     if (this.client) {
@@ -737,6 +742,12 @@ export class RedisBackendAdapter implements BackendAdapter {
 
     const client = this.getClient()
     const hash = serializeJobToHash(job)
+
+    if (job.status !== 'pending') {
+      // Stored, not queued (e.g. records created in a terminal status)
+      await client.hset(this.jobKey(job.id), hash)
+      return job.id
+    }
 
     if (job.priority > 0) {
       // Priority path: HSET + ZADD to priority sorted set (dequeue handles ordering)
@@ -796,7 +807,7 @@ export class RedisBackendAdapter implements BackendAdapter {
     const plain: Job[] = []
     for (let i = 0; i < jobs.length; i++) {
       const job = jobs[i]!
-      if (job.idempotencyKey || job.status === 'scheduled') ids[i] = await this.enqueue(job)
+      if (job.idempotencyKey || job.status !== 'pending') ids[i] = await this.enqueue(job)
       else plain.push(job)
     }
     if (plain.length > 0) await this.enqueuePlainBatch(plain)
@@ -1145,12 +1156,22 @@ export class RedisBackendAdapter implements BackendAdapter {
     }
   }
 
+  /** Drop the blocking connection: a pending BLMOVE rejects, and its caller gets []. */
+  interruptBlocking(): void {
+    if (!this.blockingClient) return
+    const pending = this.blockingClient
+    this.blockingClient = null
+    pending.then(c => c.disconnect()).catch(() => {})
+  }
+
   async blockingDequeue(queue: string, timeoutMs: number): Promise<DequeuedJob[]> {
-    // Create ONE blocking client on first call, then reuse it forever
+    // Create ONE blocking client on first call, then reuse it
     if (!this.blockingClient) {
-      this.blockingClient = await this.createBlockingClient()
+      this.blockingClient = this.createBlockingClient()
+      this.blockingClient.catch(() => { this.blockingClient = null })
     }
-    const blockingClient = this.blockingClient
+    let blockingClient: any
+    try { blockingClient = await this.blockingClient } catch { return [] }
     const commandClient = this.getClient()
 
     const timeoutSec = Math.max(1, Math.ceil(timeoutMs / 1000))

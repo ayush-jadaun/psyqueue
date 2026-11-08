@@ -1,34 +1,25 @@
-import type { PsyPlugin, Kernel, PsyEvent } from '@psyqueue/core'
+import type { PsyPlugin, Kernel } from '@psyqueue/core'
 import { WorkflowEngine } from './engine.js'
+import type { WorkflowDefinition } from './builder.js'
 
 export { workflow, WorkflowBuilder } from './builder.js'
 export { WorkflowEngine } from './engine.js'
-export { WorkflowStore } from './state.js'
-export type { StepDefinition, WorkflowDefinition, StepOpts } from './builder.js'
-export type { WorkflowInstance, WorkflowStatus, StepStatus, StepState } from './state.js'
-
-interface StepJobMeta {
-  workflowId: string
-  stepName: string
-}
+export { WorkflowStore, WORKFLOW_RECORD_QUEUE, WORKFLOW_RECORD_NAME } from './state.js'
+export type { StepDefinition, WorkflowDefinition, StepOpts, StepRetryOpts } from './builder.js'
+export type { WorkflowInstance, WorkflowStatus, StepStatus, StepState, CompensationState } from './state.js'
 
 /**
  * Creates the workflow plugin.
  *
- * The plugin:
- * - Intercepts enqueue calls for registered workflow names -> starts a workflow
- * - Listens to job:completed -> advances the workflow DAG
- * - Listens to job:dead -> fails the workflow
- * - Injects step results into JobContext.workflow / ctx.results for step handlers
- *
- * Returns the engine instance on the plugin for direct access.
+ * - Enqueueing a registered workflow name starts a workflow (returns its id).
+ * - Step jobs record their completion and advance the DAG inside their own
+ *   processing, before they are acked, so a crash re-runs the step instead of
+ *   losing the advancement. State lives in the backend (multi-process safe).
+ * - A step that is dead-lettered fails the workflow.
+ * - Step handlers get earlier results via ctx.workflow.results / ctx.results.
  */
 export function workflows(): PsyPlugin & { engine: WorkflowEngine } {
   const engine = new WorkflowEngine()
-
-  // Cache workflow metadata for active step jobs so event handlers
-  // can look it up synchronously without querying the backend.
-  const activeStepJobs = new Map<string, StepJobMeta>()
 
   const plugin: PsyPlugin & { engine: WorkflowEngine } = {
     name: 'workflows',
@@ -40,122 +31,80 @@ export function workflows(): PsyPlugin & { engine: WorkflowEngine } {
     init(kernel: Kernel): void {
       engine.init(kernel)
 
-      // ── Enqueue middleware (transform phase) ─────────────────────────────
-      // Detect if the enqueue name matches a registered workflow definition.
-      // If so, intercept and start the workflow instead of creating a single job.
+      // ── Enqueueing a workflow name starts the workflow ──────────────────
       kernel.pipeline(
         'enqueue',
         async (ctx, next) => {
-          const jobName = ctx.job.name
-
-          // Don't intercept step jobs (they have workflow metadata)
-          if (ctx.job.meta['workflow.id']) {
-            await next()
-            return
-          }
-
-          // Check if this is a registered workflow name
-          if (engine.hasDefinition(jobName)) {
-            // Start the workflow — creates the instance, enqueues root steps via backend
-            const workflowId = await engine.startWorkflow(jobName, ctx.job.payload)
-            // Set the job ID to the workflow ID so the caller gets it back
-            ctx.job.id = workflowId
-            // Mark in meta so we know this was a workflow start
-            ctx.job.meta['workflow.instance'] = workflowId
-            // Do NOT call next() — we don't want to persist a "workflow" job
-            return
-          }
-
-          await next()
+          if (ctx.job.meta['workflow.id'] || !engine.hasDefinition(ctx.job.name)) return next()
+          const workflowId = await engine.startWorkflow(ctx.job.name, ctx.job.payload)
+          ctx.job.id = workflowId
+          ctx.job.meta['workflow.instance'] = workflowId
+          // No next(): there is no job for the workflow itself
         },
         { phase: 'transform' },
       )
 
-      // ── Process middleware (transform phase) ─────────────────────────────
-      // For workflow step jobs, inject prior step results into the context
-      // so the handler can access them via ctx.workflow.results and ctx.results.
+      /** Which workflow step a job belongs to, if any. */
+      const stepOf = (meta: Record<string, unknown>) => {
+        const workflowId = meta['workflow.id'] as string | undefined
+        if (!workflowId) return undefined
+        const compensateStep = meta['workflow.compensate'] as string | undefined
+        return {
+          workflowId,
+          step: compensateStep ?? (meta['workflow.step'] as string),
+          compensation: compensateStep !== undefined,
+        }
+      }
+
+      /** A step or compensation job failed for good. */
+      const onFinalFailure = (job: { id: string; meta: Record<string, unknown> }, message: string) => {
+        const s = stepOf(job.meta)!
+        return s.compensation
+          ? engine.onCompensationDone(s.workflowId, s.step, false)
+          : engine.onStepFailed(s.workflowId, job.id, s.step, message)
+      }
+
+      // ── Step / compensation jobs ────────────────────────────────────────
+      // Outcomes are recorded inside the job's processing, before it is acked
+      // or nacked. A crash in between re-runs the job instead of losing the
+      // workflow's progress.
       kernel.pipeline(
         'process',
         async (ctx, next) => {
-          const workflowId = ctx.job.meta['workflow.id'] as string | undefined
-          const stepName = ctx.job.meta['workflow.step'] as string | undefined
+          const s = stepOf(ctx.job.meta)
+          if (!s) return next()
 
-          if (workflowId && stepName) {
-            // Ensure this job is in the active cache
-            activeStepJobs.set(ctx.job.id, { workflowId, stepName })
+          const plan = await engine.planJob(s.workflowId, ctx.job.id, s.step, s.compensation)
+          if (!plan.run) return // workflow stopped, or already recorded: skip the handler
 
-            const results = engine.getStepResults(workflowId)
-            ctx.workflow = {
-              workflowId,
-              stepId: stepName,
-              results,
-            }
-            ctx.results = results
+          ctx.workflow = { workflowId: s.workflowId, stepId: s.step, results: plan.results }
+          ctx.results = plan.results
+          await next() // a throw goes to the fail stage below
+
+          if (ctx.state['_deadLetter']) return onFinalFailure(ctx.job, String(ctx.state['_deadLetter']))
+          if (ctx.state['_requeue']) return
+          if (s.compensation) await engine.onCompensationDone(s.workflowId, s.step, true)
+          else await engine.onStepCompleted(s.workflowId, ctx.job.id, s.step, ctx.job.result)
+        },
+        { phase: 'transform' },
+      )
+
+      kernel.pipeline(
+        'fail',
+        async (ctx, next) => {
+          if (stepOf(ctx.job.meta) && !ctx.state['willRetry']) {
+            const error = ctx.state['error'] as { message?: string } | undefined
+            await onFinalFailure(ctx.job, error?.message ?? 'Unknown error')
           }
-
           await next()
         },
         { phase: 'transform' },
       )
 
-      // ── Event: job:completed ─────────────────────────────────────────────
-      // When a workflow step job completes, advance the workflow.
-      // Uses cached metadata for synchronous lookup + event data for the result.
-      kernel.events.on('job:completed', (event: PsyEvent) => {
-        const data = event.data as {
-          jobId: string
-          queue: string
-          name: string
-          result?: unknown
-        }
-
-        const meta = activeStepJobs.get(data.jobId)
-        if (!meta) return // not a workflow step job
-
-        // Clean up cache
-        activeStepJobs.delete(data.jobId)
-
-        // Advance the workflow — use the result from the event data
-        // (backend doesn't store result, only in-memory ctx.job.result)
-        engine.onStepCompleted(meta.workflowId, data.jobId, data.result).catch(() => {
-          // Swallow — workflow advancement errors must not crash the queue
-        })
-      })
-
-      // ── Event: job:failed ────────────────────────────────────────────────
-      // On each failure attempt, we don't fail the workflow — only on dead letter.
-      // But we still need to track it.
-
-      // ── Event: job:dead ──────────────────────────────────────────────────
-      // When a workflow step job is dead-lettered, fail the workflow.
-      kernel.events.on('job:dead', (event: PsyEvent) => {
-        const data = event.data as {
-          jobId: string
-          queue: string
-          name: string
-          error?: unknown
-        }
-
-        const meta = activeStepJobs.get(data.jobId)
-        if (!meta) return // not a workflow step job
-
-        // Clean up cache
-        activeStepJobs.delete(data.jobId)
-
-        const errorMsg = typeof data.error === 'string'
-          ? data.error
-          : (data.error && typeof data.error === 'object' && 'message' in data.error)
-            ? String((data.error as { message: string }).message)
-            : 'Unknown error'
-
-        engine.onStepFailed(meta.workflowId, data.jobId, errorMsg)
-      })
-
-      // ── Expose the engine for external access ───────────────────────────
       kernel.expose('workflows', {
-        registerWorkflow: (def: unknown) => engine.registerDefinition(def as import('./builder.js').WorkflowDefinition),
+        registerWorkflow: (def: unknown) => engine.registerDefinition(def as WorkflowDefinition),
         getEngine: () => engine,
-        list: () => engine.store.list(),
+        list: (definitionName?: string) => engine.store.list(definitionName),
         get: (id: string) => engine.store.get(id),
         cancel: (id: string) => engine.cancel(id),
       })

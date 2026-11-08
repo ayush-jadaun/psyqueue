@@ -22,6 +22,13 @@ The `workflows()` factory takes no configuration options. The plugin is configur
 
 **Depends on:** `backend`
 
+### Guarantees
+
+- **Durable and multi-process.** Workflow state is stored in the backend, not in memory. A workflow keeps going after a restart or deploy, and any number of processes can run its steps.
+- **Each step is enqueued once.** Step jobs carry a deterministic idempotency key, and every state change happens under a per-workflow backend lock, so steps that finish at the same time can't start a downstream step twice.
+- **Progress is recorded before the ack.** A step's completion (and the enqueueing of the next steps) happens inside the step job's processing. If the process crashes in between, the step runs again rather than the workflow stalling. Like every job, steps are at-least-once: make side effects idempotent.
+- **Steps retry.** A step is retried (default: 3 attempts total) before it fails the workflow. Configure per step with `maxRetries`, `backoff`, `backoffBase`.
+
 ### Defining a Workflow
 
 Use the `workflow()` builder to define a DAG of steps:
@@ -170,18 +177,29 @@ type WorkflowStatus =
 
 ### Exposed API
 
+All of these are async (state is read from the backend):
+
 ```typescript
 const api = q.getExposed('workflows')
 
-// List all workflow instances
-api.list()
+await api.list()             // all instances (optionally: api.list('order.process'))
+await api.get(workflowId)    // one instance, or undefined
+await api.cancel(workflowId) // true if it was running; queued steps are then skipped
 
-// Get a specific instance
-api.get(workflowId)
-
-// Cancel a running workflow
-api.cancel(workflowId)
+// Same through the engine:
+await wfPlugin.engine.store.get(workflowId)
 ```
+
+### Step Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `after` | `string \| string[]` | — | Steps that must finish first |
+| `when` | `({ results }) => boolean` | — | Skip the step when this returns false |
+| `compensate` | `JobHandler` | — | Undo handler, used by the saga plugin |
+| `maxRetries` | `number` | `3` | Total attempts for the step (and its compensation) |
+| `backoff` | `'fixed' \| 'linear' \| 'exponential'` | `'exponential'` | Delay strategy between attempts |
+| `backoffBase` | `number` | `1000` | Base delay in ms |
 
 ### Events
 
@@ -189,7 +207,8 @@ api.cancel(workflowId)
 |-------|------|------|
 | `workflow:started` | `{ workflowId, definitionName }` | Workflow instance created |
 | `workflow:completed` | `{ workflowId, definitionName }` | All steps completed |
-| `workflow:failed` | `{ workflowId, definitionName, failedStep, error }` | A step was dead-lettered |
+| `workflow:failed` | `{ workflowId, definitionName, failedStep, error }` | A step failed for good, and no other step of the workflow is still running |
+| `workflow:cancelled` | `{ workflowId }` | `cancel()` stopped the workflow |
 
 ---
 
@@ -212,7 +231,7 @@ q.use(workflows())
 q.use(saga())
 ```
 
-No configuration options. The plugin listens for `workflow:failed` events and triggers compensation.
+No configuration options. It turns on compensation in the workflows engine.
 
 **Depends on:** `workflows`
 
@@ -261,14 +280,17 @@ If `send-confirmation` fails and is dead-lettered:
 
 Compensations run in **reverse completion order** (last completed step first). Only steps that actually completed are compensated. Steps that were skipped, pending, or failed are not compensated.
 
+Compensation starts once no step of the failed workflow is still running, so a parallel step that finishes after its sibling failed is compensated too. Each compensation is a durable job that runs one at a time, with the step's retry settings, so a crash during rollback resumes it.
+
 ### Events
 
 | Event | Data | When |
 |-------|------|------|
-| `workflow:compensating` | `{ workflowId, definitionName }` | Compensation starting |
+| `workflow:compensating` | `{ workflowId, definitionName, steps }` | Compensation starting (steps in run order) |
+| `workflow:compensation-step-failed` | `{ workflowId, step }` | One compensation failed after its retries |
 | `workflow:compensated` | `{ workflowId, definitionName }` | All compensations succeeded |
-| `workflow:compensation-failed` | `{ workflowId, definitionName }` | A compensation handler threw |
+| `workflow:compensation-failed` | `{ workflowId, definitionName, failedSteps }` | Finished, but some compensations failed |
 
 ### Compensation Failure
 
-If a compensation handler itself throws, the workflow transitions to `COMPENSATION_FAILED`. The `workflow:compensation-failed` event is emitted. You should monitor for this event and handle it with manual intervention or alerts.
+If a compensation handler keeps failing after its retries, the remaining compensations **still run**. At the end the workflow is `COMPENSATION_FAILED`, `instance.compensation.failed` lists the steps that couldn't be undone, and `workflow:compensation-failed` is emitted. Monitor this event: those steps need manual intervention.

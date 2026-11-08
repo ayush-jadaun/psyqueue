@@ -1,14 +1,48 @@
-import type { Kernel, BackendAdapter, Job, JobHandler, JobContext } from '@psyqueue/core'
+import type { Kernel, BackendAdapter, JobHandler, JobContext } from '@psyqueue/core'
 import { generateId, createJob } from '@psyqueue/core'
 import type { WorkflowDefinition, StepDefinition } from './builder.js'
 import { WorkflowStore } from './state.js'
 import type { WorkflowInstance, StepState } from './state.js'
 
+const LOCK_TTL_MS = 30_000
+const LOCK_WAIT_MS = 30_000
+/** Step/compensation jobs are deduped per workflow for this long */
+const STEP_KEY_TTL_MS = 30 * 24 * 60 * 60 * 1000
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+
+type PendingEvent = [name: string, data: unknown]
+
+/** What the process middleware should do with a workflow job. */
+export type StepPlan =
+  | { run: false }
+  | { run: true; results: Record<string, unknown> }
+
 // ─── Engine ──────────────────────────────────────────────────────────────────
 
+/**
+ * Runs workflow DAGs on top of ordinary jobs.
+ *
+ * Durability: instance state lives in the backend (see WorkflowStore), and
+ * every state change happens under a backend lock for that workflow, so any
+ * number of processes can run steps of the same workflow.
+ *
+ * Exactly-once advancement: a step's completion is recorded, and its
+ * downstream steps enqueued, inside the step job's own processing, before it
+ * is acked. A crash in between re-runs the step (at-least-once) instead of
+ * stalling the workflow. Step jobs carry a deterministic idempotency key, so
+ * a step is never enqueued twice.
+ *
+ * Failure: when a step fails for good, the workflow is FAILED; once no step is
+ * still running, `workflow:failed` is emitted and, if compensation is enabled
+ * (saga plugin), compensation jobs run for completed steps in reverse
+ * completion order, one at a time, each with retries.
+ */
 export class WorkflowEngine {
   private readonly definitions = new Map<string, WorkflowDefinition>()
-  readonly store = new WorkflowStore()
+  readonly store = new WorkflowStore(() => this.backend)
+  /** Set by the saga plugin */
+  compensationEnabled = false
   private _kernel: Kernel | null = null
 
   get kernel(): Kernel {
@@ -20,321 +54,291 @@ export class WorkflowEngine {
     return this.kernel.getBackend()
   }
 
-  /**
-   * Register a workflow definition by name.
-   */
   registerDefinition(def: WorkflowDefinition): void {
     this.definitions.set(def.name, def)
   }
 
-  /**
-   * Get a registered workflow definition by name.
-   */
   getDefinition(name: string): WorkflowDefinition | undefined {
     return this.definitions.get(name)
   }
 
-  /**
-   * Check if a name corresponds to a registered workflow.
-   */
   hasDefinition(name: string): boolean {
     return this.definitions.has(name)
   }
 
-  /**
-   * Get the step definition by name for a given workflow.
-   */
   getStepDefinition(definitionName: string, stepName: string): StepDefinition | undefined {
-    const def = this.definitions.get(definitionName)
-    if (!def) return undefined
-    return def.steps.find(s => s.name === stepName)
+    return this.definitions.get(definitionName)?.steps.find(s => s.name === stepName)
   }
 
-  /**
-   * Initialize the engine with a kernel reference.
-   */
   init(kernel: Kernel): void {
     this._kernel = kernel
   }
 
-  /**
-   * Start a new workflow instance. Creates instance, enqueues root steps.
-   * Returns the workflow instance ID.
-   */
+  /** Start a new workflow instance and enqueue its root steps. Returns the workflow id. */
   async startWorkflow(definitionName: string, payload: unknown): Promise<string> {
-    const def = this.definitions.get(definitionName)
-    if (!def) {
-      throw new Error(`No workflow definition registered with name "${definitionName}"`)
-    }
-
-    const workflowId = generateId()
+    const def = this.requireDefinition(definitionName)
+    const id = generateId()
     const stepStates: Record<string, StepState> = {}
-    for (const step of def.steps) {
-      stepStates[step.name] = { status: 'pending' }
-    }
+    for (const step of def.steps) stepStates[step.name] = { status: 'pending' }
 
-    const instance: WorkflowInstance = {
-      id: workflowId,
+    await this.store.create({
+      id,
       definitionName,
       status: 'RUNNING',
       payload,
       stepStates,
+      seq: 0,
       createdAt: new Date(),
       updatedAt: new Date(),
-    }
-    this.store.create(instance)
-
-    // Find root steps (no dependencies) and enqueue them
-    const rootSteps = def.steps.filter(s => s.dependencies.length === 0)
-    for (const step of rootSteps) {
-      // Evaluate when condition for root steps
-      if (step.when) {
-        const shouldRun = step.when({ results: {} })
-        if (!shouldRun) {
-          instance.stepStates[step.name] = { status: 'skipped' }
-          continue
-        }
-      }
-      await this.enqueueStep(workflowId, step, def.name, payload)
-    }
-
-    // After enqueuing/skipping root steps, check if any downstream steps
-    // have all dependencies resolved (e.g., all root deps were skipped)
-    await this.advanceAfterSkips(workflowId, def)
-
-    // Check if workflow is already complete (all steps skipped)
-    this.checkWorkflowCompletion(workflowId)
-
-    this.kernel.events.emit('workflow:started', {
-      workflowId,
-      definitionName,
     })
-
-    return workflowId
+    this.kernel.events.emit('workflow:started', { workflowId: id, definitionName })
+    await this.mutate(id, (inst, events) => this.advance(inst, def, events))
+    return id
   }
 
-  /**
-   * Handle a step completion. Called when a workflow step job completes.
-   */
-  async onStepCompleted(workflowId: string, jobId: string, result: unknown): Promise<void> {
-    const instance = this.store.get(workflowId)
-    if (!instance) return
-    if (instance.status !== 'RUNNING') return
-
-    const def = this.definitions.get(instance.definitionName)
-    if (!def) return
-
-    // Find step name by jobId
-    const stepName = this.store.findStepByJobId(workflowId, jobId)
-    if (!stepName) return
-
-    // Update step state
-    const stepState = instance.stepStates[stepName]
-    if (!stepState || stepState.status !== 'active') return
-    stepState.status = 'completed'
-    stepState.result = result
-    instance.updatedAt = new Date()
-
-    // Find and enqueue downstream steps
-    await this.advanceWorkflow(workflowId, def)
-
-    // Check completion
-    this.checkWorkflowCompletion(workflowId)
+  /** Results of all completed steps. */
+  async getStepResults(workflowId: string): Promise<Record<string, unknown>> {
+    const inst = await this.store.get(workflowId)
+    return inst ? resultsOf(inst) : {}
   }
 
-  /**
-   * Handle a step failure (dead-lettered). Called when a workflow step job
-   * is permanently dead after all retries.
-   */
-  onStepFailed(workflowId: string, jobId: string, error: string): void {
-    const instance = this.store.get(workflowId)
-    if (!instance) return
-    if (instance.status !== 'RUNNING') return
-
-    const stepName = this.store.findStepByJobId(workflowId, jobId)
-    if (!stepName) return
-
-    const stepState = instance.stepStates[stepName]
-    if (!stepState) return
-    stepState.status = 'failed'
-    stepState.error = error
-    instance.updatedAt = new Date()
-
-    instance.status = 'FAILED'
-
-    this.kernel.events.emit('workflow:failed', {
-      workflowId,
-      definitionName: instance.definitionName,
-      failedStep: stepName,
-      error,
+  /** Cancel a running workflow. Queued steps are skipped when they come up. */
+  async cancel(workflowId: string): Promise<boolean> {
+    let cancelled = false
+    await this.mutate(workflowId, (inst, events) => {
+      if (inst.status !== 'RUNNING' && inst.status !== 'PENDING') return
+      inst.status = 'CANCELLED'
+      cancelled = true
+      events.push(['workflow:cancelled', { workflowId }])
     })
+    return cancelled
   }
 
   /**
-   * Get collected results from all completed steps.
-   */
-  getStepResults(workflowId: string): Record<string, unknown> {
-    const instance = this.store.get(workflowId)
-    if (!instance) return {}
-
-    const results: Record<string, unknown> = {}
-    for (const [name, state] of Object.entries(instance.stepStates)) {
-      if (state.status === 'completed' && state.result !== undefined) {
-        results[name] = state.result
-      }
-    }
-    return results
-  }
-
-  /**
-   * Cancel a workflow instance.
-   */
-  cancel(workflowId: string): boolean {
-    const instance = this.store.get(workflowId)
-    if (!instance) return false
-    if (instance.status !== 'RUNNING' && instance.status !== 'PENDING') return false
-    instance.status = 'CANCELLED'
-    instance.updatedAt = new Date()
-    this.kernel.events.emit('workflow:cancelled', { workflowId })
-    return true
-  }
-
-  /**
-   * Create a job handler that dispatches to the correct step handler
-   * based on the workflow metadata in the job context.
-   *
+   * Job handler for a workflow's queue: dispatches to the step's handler, or
+   * to its compensate handler for compensation jobs.
    * Usage: q.handle(workflowName, engine.createHandler(workflowName))
    */
   createHandler(definitionName: string): JobHandler {
     return async (ctx: JobContext): Promise<unknown> => {
-      const stepName = ctx.job.meta['workflow.step'] as string | undefined
-      if (!stepName) {
-        throw new Error(`Job "${ctx.job.id}" is missing workflow.step metadata`)
+      const compensating = ctx.job.meta['workflow.compensate'] as string | undefined
+      const stepName = compensating ?? (ctx.job.meta['workflow.step'] as string | undefined)
+      if (!stepName) throw new Error(`Job "${ctx.job.id}" is missing workflow.step metadata`)
+      const step = this.getStepDefinition(definitionName, stepName)
+      if (!step) throw new Error(`Step "${stepName}" not found in workflow "${definitionName}"`)
+      if (compensating) {
+        if (!step.compensate) throw new Error(`Step "${stepName}" has no compensate handler`)
+        return step.compensate(ctx)
       }
-
-      const def = this.definitions.get(definitionName)
-      if (!def) {
-        throw new Error(`No workflow definition registered: "${definitionName}"`)
-      }
-
-      const step = def.steps.find(s => s.name === stepName)
-      if (!step) {
-        throw new Error(`Step "${stepName}" not found in workflow "${definitionName}"`)
-      }
-
       return step.handler(ctx)
     }
   }
 
-  // ─── Internal ─────────────────────────────────────────────────────────────
+  // ─── Called by the plugin's process middleware ─────────────────────────────
 
   /**
-   * Enqueue a step as a job directly via the backend.
-   * The job gets workflow metadata so the process middleware and event
-   * handlers can identify it as a workflow step.
+   * Decide whether a workflow job should run its handler. Jobs whose workflow
+   * stopped (failed/cancelled), or whose work is already recorded (a re-run
+   * after a crash), are skipped. A skipped step of a stopped workflow is
+   * marked cancelled so the workflow can settle.
    */
-  private async enqueueStep(
-    workflowId: string,
-    step: StepDefinition,
-    definitionName: string,
-    payload: unknown,
-  ): Promise<void> {
-    const instance = this.store.get(workflowId)
-    if (!instance) return
+  async planJob(workflowId: string, jobId: string, step: string, compensation: boolean): Promise<StepPlan> {
+    const inst = await this.store.get(workflowId)
+    if (!inst) return { run: false }
+    const results = resultsOf(inst)
 
-    // The job name is the workflow queue name (so processNext(queueName) picks it up)
-    // We use the workflow definition name as the queue name.
-    const job: Job = createJob(definitionName, payload, {
-      queue: definitionName,
-      meta: {
-        'workflow.id': workflowId,
-        'workflow.step': step.name,
-        'workflow.definition': definitionName,
-      },
-      maxRetries: 0,
-    })
-
-    // Override the job name to be the workflow name (queue = workflow name)
-    // The name stays as the definition name so the handler lookup works.
-    await this.backend.enqueue(job)
-
-    instance.stepStates[step.name] = {
-      status: 'active',
-      jobId: job.id,
+    if (compensation) {
+      return inst.compensation?.pending[0] === step ? { run: true, results } : { run: false }
     }
-    instance.updatedAt = new Date()
+
+    const state = inst.stepStates[step]
+    if (!state || state.status !== 'active' || state.jobId !== jobId) return { run: false }
+    if (inst.status === 'RUNNING') return { run: true, results }
+
+    await this.mutate(workflowId, async (i, events) => {
+      const s = i.stepStates[step]
+      if (s?.status === 'active' && s.jobId === jobId && i.status !== 'RUNNING') {
+        s.status = 'cancelled'
+        await this.settle(i, events)
+      }
+    })
+    return { run: false }
+  }
+
+  /** A step's handler succeeded: record it, then advance (or settle) the workflow. */
+  async onStepCompleted(workflowId: string, jobId: string, step: string, result: unknown): Promise<void> {
+    await this.mutate(workflowId, async (inst, events) => {
+      const state = inst.stepStates[step]
+      if (!state || state.status !== 'active' || state.jobId !== jobId) return // already recorded
+      state.status = 'completed'
+      state.result = result
+      state.seq = ++inst.seq
+      if (inst.status === 'RUNNING') await this.advance(inst, this.requireDefinition(inst.definitionName), events)
+      else await this.settle(inst, events) // it finished after a sibling failed: compensate it too
+    })
+  }
+
+  /** A step failed for good (dead-lettered). */
+  async onStepFailed(workflowId: string, jobId: string, step: string, error: string): Promise<void> {
+    await this.mutate(workflowId, async (inst, events) => {
+      const state = inst.stepStates[step]
+      if (!state || state.status !== 'active' || state.jobId !== jobId) return
+      state.status = 'failed'
+      state.error = error
+      if (inst.status === 'RUNNING') {
+        inst.status = 'FAILED'
+        inst.failedStep = step
+      }
+      await this.settle(inst, events)
+    })
+  }
+
+  /** A compensation job finished (ok=false: it failed for good). Continue with the next one. */
+  async onCompensationDone(workflowId: string, step: string, ok: boolean): Promise<void> {
+    await this.mutate(workflowId, async (inst, events) => {
+      const comp = inst.compensation
+      if (!comp || comp.pending[0] !== step) return // already recorded
+      comp.pending.shift()
+      ;(ok ? comp.done : comp.failed).push(step)
+      if (!ok) events.push(['workflow:compensation-step-failed', { workflowId, step }])
+      await this.nextCompensation(inst, events)
+    })
+  }
+
+  // ─── Internal ─────────────────────────────────────────────────────────────
+
+  private requireDefinition(name: string): WorkflowDefinition {
+    const def = this.definitions.get(name)
+    if (!def) throw new Error(`No workflow definition registered with name "${name}"`)
+    return def
   }
 
   /**
-   * Find downstream steps whose dependencies are all satisfied and enqueue them.
+   * Load the instance under its lock, apply `fn`, save, then emit the events
+   * `fn` queued (after the lock is released, so listeners can mutate too).
    */
-  private async advanceWorkflow(workflowId: string, def: WorkflowDefinition): Promise<void> {
-    const instance = this.store.get(workflowId)
-    if (!instance || instance.status !== 'RUNNING') return
+  private async mutate(
+    workflowId: string,
+    fn: (inst: WorkflowInstance, events: PendingEvent[]) => void | Promise<void>,
+  ): Promise<void> {
+    const backend = this.backend
+    const lockKey = `workflow:${workflowId}`
+    const deadline = Date.now() + LOCK_WAIT_MS
+    while (!(await backend.acquireLock(lockKey, LOCK_TTL_MS))) {
+      if (Date.now() > deadline) throw new Error(`Timed out waiting for the lock on workflow ${workflowId}`)
+      await sleep(5 + Math.random() * 15)
+    }
+    const events: PendingEvent[] = []
+    try {
+      const inst = await this.store.get(workflowId)
+      if (!inst) return
+      await fn(inst, events)
+      await this.store.save(inst)
+    } finally {
+      await backend.releaseLock(lockKey)
+    }
+    for (const [name, data] of events) this.kernel.events.emit(name, data)
+  }
 
-    const results = this.getStepResults(workflowId)
-
-    // We may need multiple passes as skipping a step can unblock others
+  /** Enqueue every pending step whose dependencies are resolved; complete the workflow when done. */
+  private async advance(inst: WorkflowInstance, def: WorkflowDefinition, events: PendingEvent[]): Promise<void> {
+    if (inst.status !== 'RUNNING') return
     let changed = true
     while (changed) {
       changed = false
       for (const step of def.steps) {
-        const state = instance.stepStates[step.name]
+        const state = inst.stepStates[step.name]
         if (!state || state.status !== 'pending') continue
-
-        // Check if ALL dependencies are resolved (completed or skipped)
-        const allDepsResolved = step.dependencies.every(dep => {
-          const depState = instance.stepStates[dep]
-          return depState && (depState.status === 'completed' || depState.status === 'skipped')
+        const ready = step.dependencies.every(dep => {
+          const s = inst.stepStates[dep]?.status
+          return s === 'completed' || s === 'skipped'
         })
-
-        if (!allDepsResolved) continue
-
-        // Evaluate when condition
-        if (step.when) {
-          const shouldRun = step.when({ results })
-          if (!shouldRun) {
-            instance.stepStates[step.name] = { status: 'skipped' }
-            instance.updatedAt = new Date()
-            changed = true
-            continue // skipping may unblock further steps
-          }
+        if (!ready) continue
+        if (step.when && !step.when({ results: resultsOf(inst) })) {
+          inst.stepStates[step.name] = { status: 'skipped' }
+        } else {
+          const jobId = await this.enqueueWorkflowJob(inst, step, false)
+          inst.stepStates[step.name] = { status: 'active', jobId }
         }
-
-        // Enqueue the step
-        await this.enqueueStep(workflowId, step, def.name, instance.payload)
         changed = true
       }
     }
-  }
 
-  /**
-   * After skipping root steps, check if downstream steps are now unblocked.
-   */
-  private async advanceAfterSkips(workflowId: string, def: WorkflowDefinition): Promise<void> {
-    await this.advanceWorkflow(workflowId, def)
-  }
-
-  /**
-   * Check if all steps are completed/skipped and mark workflow done.
-   */
-  private checkWorkflowCompletion(workflowId: string): void {
-    const instance = this.store.get(workflowId)
-    if (!instance || instance.status !== 'RUNNING') return
-
-    const allDone = Object.values(instance.stepStates).every(
-      s => s.status === 'completed' || s.status === 'skipped'
-    )
-
-    if (allDone) {
-      instance.status = 'COMPLETED'
-      instance.updatedAt = new Date()
-
-      this.kernel.events.emit('workflow:completed', {
-        workflowId,
-        definitionName: instance.definitionName,
-        results: this.getStepResults(workflowId),
-      })
+    const done = Object.values(inst.stepStates).every(s => s.status === 'completed' || s.status === 'skipped')
+    if (done) {
+      inst.status = 'COMPLETED'
+      events.push(['workflow:completed', { workflowId: inst.id, definitionName: inst.definitionName, results: resultsOf(inst) }])
     }
   }
+
+  /**
+   * A stopped workflow settles once no step is still active: report the
+   * failure (once) and start compensation if enabled.
+   */
+  private async settle(inst: WorkflowInstance, events: PendingEvent[]): Promise<void> {
+    if (Object.values(inst.stepStates).some(s => s.status === 'active')) return
+    if (inst.status !== 'FAILED' || inst.failureReported) return
+    inst.failureReported = true
+    const failed = inst.stepStates[inst.failedStep ?? '']
+    events.push(['workflow:failed', {
+      workflowId: inst.id,
+      definitionName: inst.definitionName,
+      failedStep: inst.failedStep,
+      error: failed?.error,
+    }])
+    if (!this.compensationEnabled) return
+
+    const def = this.requireDefinition(inst.definitionName)
+    const pending = Object.entries(inst.stepStates)
+      .filter(([name, s]) => s.status === 'completed' && def.steps.find(d => d.name === name)?.compensate)
+      .sort(([, a], [, b]) => (b.seq ?? 0) - (a.seq ?? 0)) // reverse completion order
+      .map(([name]) => name)
+    inst.compensation = { pending, done: [], failed: [] }
+    inst.status = 'COMPENSATING'
+    events.push(['workflow:compensating', { workflowId: inst.id, definitionName: inst.definitionName, steps: pending }])
+    await this.nextCompensation(inst, events)
+  }
+
+  private async nextCompensation(inst: WorkflowInstance, events: PendingEvent[]): Promise<void> {
+    const comp = inst.compensation!
+    const next = comp.pending[0]
+    if (next) {
+      await this.enqueueWorkflowJob(inst, this.getStepDefinition(inst.definitionName, next)!, true)
+      return
+    }
+    inst.status = comp.failed.length > 0 ? 'COMPENSATION_FAILED' : 'COMPENSATED'
+    const base = { workflowId: inst.id, definitionName: inst.definitionName }
+    events.push(comp.failed.length > 0
+      ? ['workflow:compensation-failed', { ...base, failedSteps: comp.failed }]
+      : ['workflow:compensated', base])
+  }
+
+  /** Enqueue a step (or its compensation) job; the idempotency key makes this safe to repeat. */
+  private async enqueueWorkflowJob(inst: WorkflowInstance, step: StepDefinition, compensation: boolean): Promise<string> {
+    const meta: Record<string, unknown> = {
+      'workflow.id': inst.id,
+      'workflow.definition': inst.definitionName,
+      [compensation ? 'workflow.compensate' : 'workflow.step']: step.name,
+    }
+    const job = createJob(inst.definitionName, inst.payload, {
+      queue: inst.definitionName,
+      meta,
+      maxRetries: step.retry?.maxRetries ?? 3,
+      backoff: step.retry?.backoff,
+      backoffBase: step.retry?.backoffBase,
+      idempotencyKey: `wf:${inst.id}:${compensation ? 'compensate' : 'step'}:${step.name}`,
+      idempotencyTtl: STEP_KEY_TTL_MS,
+    })
+    job.workflowId = inst.id
+    job.stepId = step.name
+    return this.backend.enqueue(job)
+  }
+}
+
+function resultsOf(inst: WorkflowInstance): Record<string, unknown> {
+  const results: Record<string, unknown> = {}
+  for (const [name, state] of Object.entries(inst.stepStates)) {
+    if (state.status === 'completed' && state.result !== undefined) results[name] = state.result
+  }
+  return results
 }

@@ -77,6 +77,7 @@ async function main() {
       throw new Error('Card declined: insufficient funds')
     }, {
       after: 'book-hotel',
+      maxRetries: 1, // a decline won't succeed on retry: fail on the first attempt
       compensate: async (_ctx) => {
         // charge-card never succeeded, so nothing to reverse
         console.log('  [COMPENSATE charge-card] Nothing to reverse (charge never completed)')
@@ -94,9 +95,8 @@ async function main() {
     .build()
 
   wfPlugin.engine.registerDefinition(bookingWorkflow)
-  for (const step of bookingWorkflow.steps) {
-    q.handle(step.name, step.handler)
-  }
+  // Step jobs run in the workflow's own queue; one handler dispatches to steps
+  q.handle(bookingWorkflow.name, wfPlugin.engine.createHandler(bookingWorkflow.name))
 
   // ── Events ──────────────────────────────────────────────────────────────────
 
@@ -150,20 +150,16 @@ async function main() {
   })
   console.log(`  Workflow started: ${workflowId.slice(0, 8)}\n`)
 
-  // Drive the workflow steps (charge-card has 0 retries so it goes straight to dead letter)
+  // Drive the workflow steps and then the compensation jobs
   for (let i = 0; i < 20; i++) {
-    const processed = await q.processNext('default')
-    if (!processed) {
-      // Small wait for async compensation to complete
-      await new Promise(r => setTimeout(r, 100))
-      break
-    }
+    const processed = await q.processNext('book-trip')
+    if (!processed) break
   }
 
   // Alternative: use startWorker() for continuous processing (production pattern)
   // In production, replace the manual loop above with:
   //
-  // q.startWorker('default', { concurrency: 5, pollInterval: 50 })
+  // q.startWorker('book-trip', { concurrency: 5, pollInterval: 50 })
   //
   // The saga plugin listens for workflow:failed events and automatically
   // invokes compensate handlers in reverse order — this works identically
@@ -172,10 +168,10 @@ async function main() {
   // ── Show final workflow state ─────────────────────────────────────────────
 
   console.log('\n-- Final workflow state --')
-  const instance = wfPlugin.engine.store.get(workflowId)
+  const instance = await wfPlugin.engine.store.get(workflowId)
   if (instance) {
     console.log(`  status: ${instance.status}`)
-    for (const [name, state] of Object.entries(instance.steps)) {
+    for (const [name, state] of Object.entries(instance.stepStates)) {
       console.log(`  step=${name}  status=${state.status}`)
     }
   }

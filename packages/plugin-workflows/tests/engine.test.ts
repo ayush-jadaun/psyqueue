@@ -49,7 +49,7 @@ describe('Workflow Engine', () => {
 
     expect(handler).toHaveBeenCalledTimes(1)
 
-    const instance = engine.store.list()[0]!
+    const instance = (await engine.store.list())[0]!
     expect(instance.status).toBe('COMPLETED')
     expect(instance.stepStates['only']!.status).toBe('completed')
   })
@@ -73,7 +73,7 @@ describe('Workflow Engine', () => {
 
     expect(order).toEqual(['a', 'b', 'c'])
 
-    const instance = engine.store.list()[0]!
+    const instance = (await engine.store.list())[0]!
     expect(instance.status).toBe('COMPLETED')
   })
 
@@ -129,7 +129,7 @@ describe('Workflow Engine', () => {
     expect(order).toContain('right')
     expect(order[3]).toBe('end')
 
-    const instance = engine.store.list()[0]!
+    const instance = (await engine.store.list())[0]!
     expect(instance.status).toBe('COMPLETED')
   })
 
@@ -159,7 +159,7 @@ describe('Workflow Engine', () => {
     expect(skippedHandler).not.toHaveBeenCalled()
     expect(doneHandler).toHaveBeenCalled()
 
-    const instance = engine.store.list()[0]!
+    const instance = (await engine.store.list())[0]!
     expect(instance.stepStates['premium']!.status).toBe('skipped')
     expect(instance.status).toBe('COMPLETED')
   })
@@ -237,21 +237,21 @@ describe('Workflow Engine', () => {
     await q.processNext('complete')
     await tick()
 
-    const instance = engine.store.get(wfId)!
+    const instance = (await engine.store.get(wfId))!
     expect(instance.status).toBe('COMPLETED')
   })
 
   it('marks workflow FAILED when step fails', async () => {
     const wf = workflow('fail')
-      .step('bomb', async () => { throw new Error('boom') })
+      .step('bomb', async () => { throw new Error('boom') }, { maxRetries: 1 })
       .build()
     setup(wf)
 
     await q.enqueue('fail', {})
-    await q.processNext('fail') // attempt 1 -> fails -> dead letter (maxRetries: 0)
+    await q.processNext('fail') // single attempt (maxRetries: 1) -> dead letter
     await tick()
 
-    const instance = engine.store.list()[0]!
+    const instance = (await engine.store.list())[0]!
     expect(instance.status).toBe('FAILED')
     expect(instance.stepStates['bomb']!.status).toBe('failed')
   })
@@ -280,7 +280,7 @@ describe('Workflow Engine', () => {
     q.events.on('workflow:failed', (e) => events.push(e.data))
 
     const wf = workflow('ev-fail')
-      .step('bomb', async () => { throw new Error('boom') })
+      .step('bomb', async () => { throw new Error('boom') }, { maxRetries: 1 })
       .build()
     setup(wf)
 
@@ -328,7 +328,7 @@ describe('Workflow Engine', () => {
 
     expect(finalHandler).toHaveBeenCalled()
 
-    const instance = engine.store.list()[0]!
+    const instance = (await engine.store.list())[0]!
     expect(instance.stepStates['never1']!.status).toBe('skipped')
     expect(instance.stepStates['never2']!.status).toBe('skipped')
     expect(instance.status).toBe('COMPLETED')
@@ -344,7 +344,7 @@ describe('Workflow Engine', () => {
     expect(typeof wfId).toBe('string')
     expect(wfId.length).toBeGreaterThan(0)
 
-    const instance = engine.store.get(wfId)
+    const instance = (await engine.store.get(wfId))
     expect(instance).toBeDefined()
     expect(instance!.definitionName).toBe('id-test')
   })
@@ -357,10 +357,10 @@ describe('Workflow Engine', () => {
     setup(wf)
 
     const wfId = await q.enqueue('cancel-test', {})
-    const cancelled = engine.cancel(wfId)
+    const cancelled = await engine.cancel(wfId)
     expect(cancelled).toBe(true)
 
-    const instance = engine.store.get(wfId)!
+    const instance = (await engine.store.get(wfId))!
     expect(instance.status).toBe('CANCELLED')
   })
 
@@ -373,7 +373,7 @@ describe('Workflow Engine', () => {
     const payload = { orderId: 'abc', amount: 99 }
     const wfId = await q.enqueue('payload-test', payload)
 
-    const instance = engine.store.get(wfId)!
+    const instance = (await engine.store.get(wfId))!
     expect(instance.payload).toEqual(payload)
   })
 

@@ -680,13 +680,16 @@ describe.skipIf(!pgAvailable)('PostgresBackendAdapter – real Postgres', () => 
   })
 
   it('different lock keys are independent', async () => {
-    const a = await adapter.acquireLock('lock-a', 5000)
-    const b = await adapter.acquireLock('lock-b', 5000)
+    // Unique keys: the shared test DB may still hold locks from a previous run
+    const keyA = `lock-a-${Date.now()}`
+    const keyB = `lock-b-${Date.now()}`
+    const a = await adapter.acquireLock(keyA, 5000)
+    const b = await adapter.acquireLock(keyB, 5000)
     expect(a).toBe(true)
     expect(b).toBe(true)
 
-    expect(await adapter.acquireLock('lock-a', 5000)).toBe(false)
-    expect(await adapter.acquireLock('lock-b', 5000)).toBe(false)
+    expect(await adapter.acquireLock(keyA, 5000)).toBe(false)
+    expect(await adapter.acquireLock(keyB, 5000)).toBe(false)
   })
 
   // 24. Empty queue

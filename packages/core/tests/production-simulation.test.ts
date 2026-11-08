@@ -397,7 +397,7 @@ describe('Production Simulation', () => {
     })
 
     // Verify workflow instance state
-    const instance = wfPlugin.engine.store.get(workflowId)
+    const instance = (await wfPlugin.engine.store.get(workflowId))
     expect(instance).toBeDefined()
     expect(instance!.status).toBe('COMPLETED')
   })

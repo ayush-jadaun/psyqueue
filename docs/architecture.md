@@ -87,7 +87,7 @@ Plugins can expose APIs to other plugins or to user code:
 kernel.expose('workflows', {
   registerWorkflow: (def) => engine.registerDefinition(def),
   getEngine: () => engine,
-  list: () => engine.store.list(),
+  list: () => engine.store.list(),   // async: state lives in the backend
   cancel: (id) => engine.cancel(id),
 })
 

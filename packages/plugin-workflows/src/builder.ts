@@ -1,4 +1,4 @@
-import type { JobHandler } from '@psyqueue/core'
+import type { BackoffStrategy, JobHandler } from '@psyqueue/core'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -8,6 +8,15 @@ export interface StepDefinition {
   dependencies: string[]
   when?: (ctx: { results: Record<string, unknown> }) => boolean
   compensate?: JobHandler
+  retry?: StepRetryOpts
+}
+
+export interface StepRetryOpts {
+  /** Total attempts for the step (and its compensation) before it counts as failed. Default: 3 */
+  maxRetries?: number
+  backoff?: BackoffStrategy
+  /** Base backoff delay in ms. Default: 1000 */
+  backoffBase?: number
 }
 
 export interface WorkflowDefinition {
@@ -17,7 +26,7 @@ export interface WorkflowDefinition {
   __workflow: true
 }
 
-export interface StepOpts {
+export interface StepOpts extends StepRetryOpts {
   after?: string | string[]
   when?: (ctx: { results: Record<string, unknown> }) => boolean
   compensate?: JobHandler
@@ -44,6 +53,7 @@ export class WorkflowBuilder {
       dependencies,
       when: opts?.when,
       compensate: opts?.compensate,
+      retry: { maxRetries: opts?.maxRetries, backoff: opts?.backoff, backoffBase: opts?.backoffBase },
     })
 
     return this

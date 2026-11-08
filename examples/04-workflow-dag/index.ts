@@ -87,9 +87,8 @@ async function main() {
 
   // Register the workflow definition and its step handlers.
   wfPlugin.engine.registerDefinition(orderWorkflow)
-  for (const step of orderWorkflow.steps) {
-    q.handle(step.name, step.handler)
-  }
+  // Step jobs run in the workflow's own queue; one handler dispatches to steps
+  q.handle(orderWorkflow.name, wfPlugin.engine.createHandler(orderWorkflow.name))
 
   // ── Events ─────────────────────────────────────────────────────────────────
 
@@ -124,7 +123,7 @@ async function main() {
   // Drive the workflow by processing jobs until all are done.
   // The engine enqueues multiple steps as they become ready.
   for (let i = 0; i < 20; i++) {
-    const processed = await q.processNext('default')
+    const processed = await q.processNext('process-order')
     if (!processed) break
   }
 
@@ -147,18 +146,18 @@ async function main() {
   console.log(`  Workflow started: ${workflowId2.slice(0, 8)}\n`)
 
   for (let i = 0; i < 20; i++) {
-    const processed = await q.processNext('default')
+    const processed = await q.processNext('process-order')
     if (!processed) break
   }
 
   // ── Inspect workflow state via the engine ────────────────────────────────
 
   console.log('\n-- Workflow state --')
-  const instances = wfPlugin.engine.store.list()
+  const instances = await wfPlugin.engine.store.list()
   for (const instance of instances) {
     console.log(`  workflowId=${instance.id.slice(0, 8)}  status=${instance.status}`)
-    for (const [stepName, state] of Object.entries(instance.steps)) {
-      console.log(`    step=${stepName}  status=${state.status}  skipped=${state.skipped ?? false}`)
+    for (const [stepName, state] of Object.entries(instance.stepStates)) {
+      console.log(`    step=${stepName}  status=${state.status}`)
     }
   }
 
