@@ -176,6 +176,9 @@ function nackQuery(jobId: string, opts?: NackOpts): { sql: string; params: unkno
   }
 }
 
+const HEARTBEAT_COLUMN_SQL = `SELECT 1 FROM information_schema.columns
+  WHERE table_schema = current_schema() AND table_name = 'psyqueue_jobs' AND column_name = 'heartbeat_at'`
+
 const DEFAULT_IDEMPOTENCY_TTL = 24 * 60 * 60 * 1000
 
 export class PostgresBackendAdapter implements BackendAdapter {
@@ -205,16 +208,39 @@ export class PostgresBackendAdapter implements BackendAdapter {
       max: this.opts.max ?? 10,
     })
 
-    // Run schema migrations. Concurrent CREATE ... IF NOT EXISTS can still fail
-    // in Postgres, so processes starting together take turns.
-    const client = await this.pool.connect()
-    try {
-      await client.query(`SELECT pg_advisory_lock(hashtext('psyqueue_schema'))`)
-      await client.query(SCHEMA_SQL)
-    } finally {
-      await client.query(`SELECT pg_advisory_unlock(hashtext('psyqueue_schema'))`).catch(() => {})
-      client.release()
+    // Migrate only when the schema is missing or outdated. DDL takes table
+    // locks even when it changes nothing (ALTER TABLE: ACCESS EXCLUSIVE,
+    // CREATE INDEX: SHARE), which blocks and can deadlock processes already
+    // using the tables, so a current schema is left alone. Processes starting
+    // together take turns via an advisory lock (concurrent CREATE ... IF NOT
+    // EXISTS can fail in Postgres).
+    if (!(await this.schemaIsCurrent())) {
+      const client = await this.pool.connect()
+      try {
+        await client.query(`SELECT pg_advisory_lock(hashtext('psyqueue_schema'))`)
+        if (!(await this.schemaIsCurrent())) {
+          await client.query(SCHEMA_SQL)
+          const { rowCount } = await client.query(HEARTBEAT_COLUMN_SQL)
+          if (rowCount === 0) await client.query('ALTER TABLE psyqueue_jobs ADD COLUMN heartbeat_at TIMESTAMPTZ')
+        }
+      } finally {
+        await client.query(`SELECT pg_advisory_unlock(hashtext('psyqueue_schema'))`).catch(() => {})
+        client.release()
+      }
     }
+  }
+
+  /** True when every table and column this adapter needs exists (catalog read only, no locks). */
+  private async schemaIsCurrent(): Promise<boolean> {
+    const { rows } = await this.getPool().query<{ current: boolean }>(
+      `SELECT to_regclass('psyqueue_jobs') IS NOT NULL
+          AND to_regclass('psyqueue_locks') IS NOT NULL
+          AND to_regclass('psyqueue_idempotency_keys') IS NOT NULL
+          AND to_regclass('psyqueue_tenant_policies') IS NOT NULL
+          AND to_regclass('psyqueue_rate_events') IS NOT NULL
+          AND EXISTS (${HEARTBEAT_COLUMN_SQL}) AS current`,
+    )
+    return rows[0]!.current
   }
 
   async disconnect(): Promise<void> {

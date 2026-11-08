@@ -26,3 +26,28 @@ it.skipIf(!pgAvailable)('many processes can start (and migrate) a fresh database
     await admin.end()
   }
 })
+
+it.skipIf(!pgAvailable)('processes can connect while another process is busy writing', async () => {
+  const busy = new PostgresBackendAdapter({ connectionString: ADMIN_URL })
+  await busy.connect()
+  const queue = `busy_${Date.now()}`
+  let stop = false
+  const errors: string[] = []
+  const writer = (async () => {
+    for (let i = 0; !stop; i++) {
+      const id = `busy-${queue}-${i}`
+      await busy.enqueue({ id, queue, name: 'x', payload: {}, status: 'pending', priority: 0, maxRetries: 1, attempt: 1,
+        backoff: 'fixed', timeout: 1000, createdAt: new Date(), meta: {} }).catch(e => errors.push(String(e)))
+      await busy.atomic([{ type: 'nack', jobId: id, opts: { requeue: false } }]).catch(e => errors.push(String(e)))
+    }
+  })()
+  const results = await Promise.allSettled(Array.from({ length: 10 }, async () => {
+    const a = new PostgresBackendAdapter({ connectionString: ADMIN_URL })
+    await a.connect()
+    await a.disconnect()
+  }))
+  stop = true
+  await writer
+  await busy.disconnect()
+  expect([...errors, ...results.flatMap(r => (r.status === 'rejected' ? [String(r.reason)] : []))]).toEqual([])
+})

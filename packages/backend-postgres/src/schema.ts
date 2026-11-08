@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS psyqueue_jobs (
   completion_token TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   started_at TIMESTAMPTZ,
-  completed_at TIMESTAMPTZ
+  completed_at TIMESTAMPTZ,
+  heartbeat_at TIMESTAMPTZ
 );
 
 CREATE INDEX IF NOT EXISTS idx_psyqueue_jobs_dequeue
@@ -53,9 +54,6 @@ CREATE INDEX IF NOT EXISTS idx_psyqueue_jobs_workflow
 
 CREATE INDEX IF NOT EXISTS idx_psyqueue_jobs_status
   ON psyqueue_jobs (status);
-
--- Lease heartbeat (added after initial release; ADD COLUMN IF NOT EXISTS migrates old DBs)
-ALTER TABLE psyqueue_jobs ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMPTZ;
 
 -- Idempotency keys: one live job per (queue, name + key). Checked and claimed
 -- in the same transaction as the job insert.
