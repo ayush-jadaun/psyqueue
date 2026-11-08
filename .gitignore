@@ -6,3 +6,4 @@ coverage/
 .env
 *.db
 *.wal
+examples/dashboard-live/work-output/
