@@ -27,10 +27,12 @@ interface WorkerInternals {
  * Single-loop semaphore worker architecture.
  *
  * ONE dequeue loop with a semaphore controlling concurrency.
- * - 1 blocking connection (BRPOPLPUSH) + 1 command connection = 2 Redis connections total
+ * - 1 blocking connection (BLMOVE) + 1 command connection = 2 Redis connections total
  * - Semaphore limits parallelism (concurrency:10 = up to 10 handlers running)
  * - Non-blocking batch grab with local buffer reduces Redis round-trips
- * - BRPOPLPUSH only used when queue is empty (efficient blocking wait)
+ * - BLMOVE only used when queue is empty (efficient blocking wait)
+ * - One heartbeat timer renews leases on every held job, so stale recovery
+ *   only reclaims jobs whose worker died (not long-running ones)
  * - Non-blocking dispatch: loop doesn't wait for handlers, keeps pulling
  */
 export class WorkerPool {
@@ -41,6 +43,9 @@ export class WorkerPool {
   private pendingResolves: Array<() => void> = []
   /** Local buffer of pre-fetched jobs ready for dispatch */
   private jobBuffer: DequeuedJob[] = []
+  /** Jobs this worker holds (in flight or buffered): jobId -> completion token */
+  private held = new Map<string, string>()
+  private heartbeat: ReturnType<typeof setInterval> | null = null
 
   constructor(
     private queue: string,
@@ -55,7 +60,40 @@ export class WorkerPool {
   start(): void {
     this.running = true
     this.stopping = false
+    if (this.backend.extendLeases) {
+      // ponytail: timer runs on the event loop, so a handler that blocks it with
+      // sync CPU work for > leaseMs can still be reclaimed; raise leaseMs for those.
+      this.heartbeat = setInterval(() => { void this.renewLeases() }, this.leaseMs / 4)
+      this.heartbeat.unref?.()
+    }
     this.loopPromise = this.dequeueLoop()
+  }
+
+  private get leaseMs(): number {
+    return this.opts.leaseMs ?? 60_000
+  }
+
+  private hold(job: DequeuedJob): void {
+    if (job.completionToken) this.held.set(job.id, job.completionToken)
+  }
+
+  private async renewLeases(): Promise<void> {
+    if (this.held.size === 0 || !this.backend.extendLeases) return
+    const leases = [...this.held].map(([jobId, token]) => ({ jobId, token }))
+    try {
+      await this.backend.extendLeases(this.queue, leases)
+    } catch {
+      // Best-effort: a missed beat is fine, the lease survives 3 more
+    }
+  }
+
+  /** Run a job in a concurrency slot; releases the slot and lease when done. */
+  private run(job: DequeuedJob): void {
+    this.activeCount++
+    this.processJob(job).finally(() => {
+      this.held.delete(job.id)
+      this.releaseSlot()
+    })
   }
 
   async stop(): Promise<void> {
@@ -71,6 +109,8 @@ export class WorkerPool {
     while (this.activeCount > 0) {
       await new Promise(r => setTimeout(r, 10))
     }
+    if (this.heartbeat) clearInterval(this.heartbeat)
+    this.heartbeat = null
     this.running = false
     this.loopPromise = null
   }
@@ -122,9 +162,7 @@ export class WorkerPool {
   private dispatchFromBuffer(): number {
     let dispatched = 0
     while (this.jobBuffer.length > 0 && this.freeSlots > 0) {
-      const job = this.jobBuffer.shift()!
-      this.activeCount++
-      this.processJob(job).finally(() => this.releaseSlot())
+      this.run(this.jobBuffer.shift()!)
       dispatched++
     }
     return dispatched
@@ -136,8 +174,8 @@ export class WorkerPool {
    * Strategy for blocking backends:
    * 1. Dispatch any buffered jobs first (no Redis call needed)
    * 2. If buffer empty, try non-blocking batch grab (fast path)
-   * 3. If queue empty, fall back to BRPOPLPUSH (blocking wait)
-   * 4. After BRPOPLPUSH unblocks, batch-grab more to fill buffer
+   * 3. If queue empty, fall back to BLMOVE (blocking wait)
+   * 4. After BLMOVE unblocks, batch-grab more to fill buffer
    *
    * Strategy for polling backends:
    * - Standard poll with sleep when queue is empty
@@ -164,11 +202,11 @@ export class WorkerPool {
           lastScheduledPoll = Date.now()
         }
 
-        // Periodically check for stale active jobs (every 30 seconds)
-        if (Date.now() - lastStaleCheck > 30_000) {
+        // Periodically reclaim jobs whose lease expired (their worker died)
+        if (Date.now() - lastStaleCheck > this.leaseMs / 2) {
           if (this.backend.recoverStaleJobs) {
             try {
-              const recovered = await this.backend.recoverStaleJobs(this.queue, 60_000)
+              const recovered = await this.backend.recoverStaleJobs(this.queue, this.leaseMs)
               if (recovered.length > 0) {
                 this.eventBus.emit('job:recovered', { queue: this.queue, count: recovered.length, jobIds: recovered })
               }
@@ -207,10 +245,17 @@ export class WorkerPool {
             }
             queueWasEmpty = false
           } else {
-            // BLOCKING PATH: queue was empty, wait with BRPOPLPUSH
+            // BLOCKING PATH: queue was empty, wait with BLMOVE
             jobs = await this.backend.blockingDequeue(this.queue, this.opts.blockTimeout ?? 5000)
 
-            if (jobs.length === 0) continue // timeout
+            if (jobs.length === 0) {
+              // Timeout. BLMOVE only watches the normal list, so retry the
+              // non-blocking path, which also checks the priority set.
+              // ponytail: priority jobs on an idle queue wait up to blockTimeout;
+              // add a wake-up marker on priority enqueue if that latency matters.
+              queueWasEmpty = false
+              continue
+            }
 
             // Queue active again, grab more to fill buffer
             queueWasEmpty = false
@@ -232,9 +277,9 @@ export class WorkerPool {
 
         // Dispatch up to concurrency, buffer the rest
         for (const job of jobs) {
+          this.hold(job)
           if (this.freeSlots > 0) {
-            this.activeCount++
-            this.processJob(job).finally(() => this.releaseSlot())
+            this.run(job)
           } else {
             this.jobBuffer.push(job)
           }
@@ -325,6 +370,7 @@ export class WorkerPool {
       if (backend.ackAndFetch) {
         const { nextJob } = await backend.ackAndFetch(job.id, completionToken, job.queue, resultJson)
         if (nextJob) {
+          this.hold(nextJob)
           this.jobBuffer.push(nextJob)
         }
       } else {

@@ -176,6 +176,12 @@ export interface BackendAdapter {
    * Returns the IDs of recovered jobs.
    */
   recoverStaleJobs?(queue: string, maxAgeMs: number): Promise<string[]>
+  /**
+   * Heartbeat: renew the lease on jobs this worker still holds, so
+   * recoverStaleJobs() only reclaims jobs whose worker actually died.
+   * Leases whose token no longer matches (job was reclaimed) are ignored.
+   */
+  extendLeases?(queue: string, leases: Array<{ jobId: string; token: string }>): Promise<void>
 }
 
 // === Event Types ===
@@ -279,4 +285,11 @@ export interface WorkerOpts {
   batchSize?: number
   /** Milliseconds between polls for non-blocking backends (default: 50) */
   pollInterval?: number
+  /**
+   * Milliseconds an active job may go without a heartbeat before another
+   * worker reclaims it (default: 60000). The worker renews leases on every
+   * job it holds every leaseMs/4, so long-running handlers are never
+   * reclaimed while their worker is alive.
+   */
+  leaseMs?: number
 }

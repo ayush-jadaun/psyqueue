@@ -125,19 +125,15 @@ export function deserializeJobFromHash(hash: JobHash): Job {
     parentJobId: ext ? (ext.parent_job_id as string | undefined) : (hash['parent_job_id'] || undefined),
     traceId: ext ? (ext.trace_id as string | undefined) : (hash['trace_id'] || undefined),
     spanId: ext ? (ext.span_id as string | undefined) : (hash['span_id'] || undefined),
-    runAt: ext
-      ? (ext.run_at ? new Date(ext.run_at as string) : undefined)
-      : (hash['run_at'] ? new Date(hash['run_at']) : undefined),
+    // Lua scripts (ack/nack/updateJob) write run_at/result/error as top-level
+    // fields, so those take precedence over the packed _ext copy.
+    runAt: parseDateField(hash['run_at']) ?? (ext?.run_at ? new Date(ext.run_at as string) : undefined),
     cron: ext ? (ext.cron as string | undefined) : (hash['cron'] || undefined),
     deadline: ext
       ? (ext.deadline ? new Date(ext.deadline as string) : undefined)
       : (hash['deadline'] ? new Date(hash['deadline']) : undefined),
-    result: ext
-      ? (ext.result ?? undefined)
-      : (hash['result'] ? JSON.parse(hash['result']) : undefined),
-    error: ext
-      ? (ext.error as JobError | undefined)
-      : (hash['error'] ? JSON.parse(hash['error']) as JobError : undefined),
+    result: hash['result'] ? JSON.parse(hash['result']) : (ext?.result ?? undefined),
+    error: hash['error'] ? JSON.parse(hash['error']) as JobError : (ext?.error as JobError | undefined),
     meta: ext
       ? ((ext.meta ?? {}) as Record<string, unknown>)
       : (JSON.parse(hash['meta'] ?? '{}') as Record<string, unknown>),
@@ -145,6 +141,12 @@ export function deserializeJobFromHash(hash: JobHash): Job {
     startedAt: hash['started_at'] ? new Date(hash['started_at']) : undefined,
     completedAt: hash['completed_at'] ? new Date(hash['completed_at']) : undefined,
   }
+}
+
+/** Parses a date stored either as ISO string or as epoch ms (written by Lua). */
+function parseDateField(value: string | undefined): Date | undefined {
+  if (!value) return undefined
+  return /^\d+$/.test(value) ? new Date(Number(value)) : new Date(value)
 }
 
 // Score for sorted set: lower score = higher priority (dequeue pops lowest score = highest priority)
@@ -158,7 +160,7 @@ export function computePendingScore(priority: number, createdAt: Date): number {
 
 // ─── Lua Scripts ──────────────────────────────────────────────────────────────
 
-// Dequeue Lua: check priority sorted set FIRST, then RPOP from ready list for remaining
+// Dequeue Lua: check priority sorted set FIRST, then LPOP from ready list for remaining
 // KEYS[1] = ready list key
 // KEYS[2] = active sorted set key
 // KEYS[3] = job hash key prefix
@@ -200,7 +202,7 @@ end
 -- Step 2: If we still need more, pop from ready list (FIFO for priority=0 jobs)
 local remaining = count - activated
 for i = 1, remaining do
-  local id = redis.call('RPOP', ready_key)
+  local id = redis.call('LPOP', ready_key)
   if not id then break end
 
   local hash_key = hash_prefix .. id
@@ -218,7 +220,7 @@ end
 return results
 `
 
-// Activate a single job after BRPOPLPUSH returns its ID
+// Activate a single job after BLMOVE returns its ID
 // KEYS[1] = active sorted set key
 // KEYS[2] = job hash key
 // ARGV[1] = completion token
@@ -335,7 +337,7 @@ local priority_items = redis.call('ZPOPMIN', priority_key, 1)
 if #priority_items >= 2 then
   next_id = priority_items[1]
 else
-  next_id = redis.call('RPOP', ready_key)
+  next_id = redis.call('LPOP', ready_key)
 end
 
 if not next_id then
@@ -504,7 +506,7 @@ end
 return ids
 `
 
-// Batch activate script (used after BRPOPLPUSH + batch pop)
+// Batch activate script (used after BLMOVE + batch pop)
 // KEYS[1] = active sorted set key
 // KEYS[2..N] = job hash keys
 // ARGV[1] = started_at ISO string
@@ -531,13 +533,29 @@ end
 return results
 `
 
+// Extend leases (worker heartbeat): refresh _started_ms on jobs the worker still
+// holds, so RECOVER_STALE_SCRIPT only reclaims jobs whose worker stopped beating.
+// Skips jobs that are no longer active or were reclaimed (token changed).
+// KEYS[1] = job hash prefix; ARGV = jobId1, token1, jobId2, token2, ...
+export const EXTEND_LEASES_SCRIPT = `
+local t = redis.call('TIME')
+local now_ms = tostring(tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000))
+for i = 1, #ARGV, 2 do
+  local key = KEYS[1] .. ARGV[i]
+  local fields = redis.call('HMGET', key, 'status', 'completion_token')
+  if fields[1] == 'active' and fields[2] == ARGV[i + 1] then
+    redis.call('HSET', key, '_started_ms', now_ms)
+  end
+end
+return 1
+`
+
 // Recover stale jobs: scan active set, check started_at, move back to ready/priority
 // KEYS[1] = active set key
 // KEYS[2] = hash prefix
 // KEYS[3] = ready list key
 // KEYS[4] = priority sorted set key
 // ARGV[1] = max age in ms (jobs older than this are considered stale)
-// ARGV[2] = current time in ms
 // Returns: array of recovered job IDs
 export const RECOVER_STALE_SCRIPT = `
 local active_key = KEYS[1]
@@ -545,7 +563,9 @@ local hash_prefix = KEYS[2]
 local ready_key = KEYS[3]
 local priority_key = KEYS[4]
 local max_age_ms = tonumber(ARGV[1])
-local now_ms = tonumber(ARGV[2])
+-- Use Redis's clock (same one that stamps _started_ms), not the caller's
+local t = redis.call('TIME')
+local now_ms = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
 local cutoff_ms = now_ms - max_age_ms
 
 local members = redis.call('SMEMBERS', active_key)
@@ -595,7 +615,7 @@ export class RedisBackendAdapter implements BackendAdapter {
   readonly supportsBlocking = true
 
   private client: any = null
-  /** Single blocking client -- created once, reused for all BRPOPLPUSH calls */
+  /** Single blocking client -- created once, reused for all BLMOVE calls */
   private blockingClient: any = null
   private readonly opts: RedisAdapterOpts
   private readonly prefix: string
@@ -633,7 +653,7 @@ export class RedisBackendAdapter implements BackendAdapter {
     return `${this.prefix}:${queue}:active`
   }
 
-  /** Processing list — BRPOPLPUSH destination for in-flight tracking */
+  /** Processing list — BLMOVE destination for in-flight tracking */
   private processingKey(queue: string): string {
     return `${this.prefix}:${queue}:processing`
   }
@@ -772,7 +792,7 @@ export class RedisBackendAdapter implements BackendAdapter {
     const client = this.getClient()
     const startedAt = new Date().toISOString()
 
-    // Single Lua call: check priority sorted set first, then RPOP from ready list
+    // Single Lua call: check priority sorted set first, then LPOP from ready list
     const results = await client.eval(
       DEQUEUE_SCRIPT,
       4,
@@ -1079,11 +1099,14 @@ export class RedisBackendAdapter implements BackendAdapter {
 
     let jobId: string | null = null
     try {
-      // BRPOPLPUSH: pop from ready list, push to processing list
-      // Returns the job ID string (the value that was in the list), or null on timeout
-      jobId = await blockingClient.brpoplpush(
+      // BLMOVE LEFT: take the oldest job from the head of the ready list (producers
+      // RPUSH to the tail, so this is FIFO) and park it in the processing list.
+      // Returns the job ID, or null on timeout.
+      jobId = await blockingClient.blmove(
         this.readyKey(queue),
         this.processingKey(queue),
+        'LEFT',
+        'RIGHT',
         timeoutSec,
       )
     } catch {
@@ -1123,7 +1146,7 @@ export class RedisBackendAdapter implements BackendAdapter {
   }
 
   async batchDequeue(queue: string, count: number): Promise<DequeuedJob[]> {
-    // Non-blocking batch dequeue: just use the existing dequeue (single Lua RPOP N)
+    // Non-blocking batch dequeue: just use the existing dequeue (single Lua LPOP N)
     return this.dequeue(queue, count)
   }
 
@@ -1151,7 +1174,6 @@ export class RedisBackendAdapter implements BackendAdapter {
 
   async recoverStaleJobs(queue: string, maxAgeMs: number): Promise<string[]> {
     const client = this.getClient()
-    const nowMs = Date.now()
 
     const recovered = await client.eval(
       RECOVER_STALE_SCRIPT,
@@ -1161,10 +1183,15 @@ export class RedisBackendAdapter implements BackendAdapter {
       this.readyKey(queue),
       this.priorityKey(queue),
       String(maxAgeMs),
-      String(nowMs),
     ) as string[]
 
     return recovered ?? []
+  }
+
+  async extendLeases(_queue: string, leases: Array<{ jobId: string; token: string }>): Promise<void> {
+    if (leases.length === 0) return
+    const args = leases.flatMap(l => [l.jobId, l.token])
+    await this.getClient().eval(EXTEND_LEASES_SCRIPT, 1, this.jobHashPrefix(), ...args)
   }
 
   private async createBlockingClient(): Promise<any> {
