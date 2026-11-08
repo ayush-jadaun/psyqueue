@@ -6,7 +6,7 @@
     "bench": "tsx run.ts",
     "bench:throughput": "tsx throughput.ts",
     "bench:latency": "tsx latency.ts",
-    "bench:comparison": "tsx comparison.ts",
+    "bench:comparison": "tsx fair-vs-bullmq.ts",
     "bench:workflow": "tsx workflow.ts"
   },
   "dependencies": {

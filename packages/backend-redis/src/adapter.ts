@@ -429,29 +429,6 @@ end
 return 1
 `
 
-// Promote Lua: pop items from the priority sorted set and LPUSH to the front of the ready list
-// KEYS[1] = priority sorted set key
-// KEYS[2] = ready list key
-// ARGV[1] = count (how many to promote)
-// Returns: number promoted
-export const PROMOTE_SCRIPT = `
-local priority_key = KEYS[1]
-local ready_key = KEYS[2]
-local count = tonumber(ARGV[1])
-
-local ids = redis.call('ZPOPMIN', priority_key, count)
-if #ids == 0 then return 0 end
-
-local promoted = 0
-for i = 1, #ids, 2 do
-  local id = ids[i]
-  -- LPUSH to front of list so priority jobs are dequeued before normal jobs
-  redis.call('LPUSH', ready_key, id)
-  promoted = promoted + 1
-end
-return promoted
-`
-
 // Enqueue with priority: ZADD to priority sorted set (no promotion — dequeue handles it)
 // KEYS[1] = priority sorted set key
 // ARGV[1] = score

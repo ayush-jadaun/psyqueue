@@ -1,7 +1,6 @@
 import { runThroughputBenchmarks, formatThroughputResults } from './throughput.js'
 import { runLatencyBenchmarks, formatLatencyResults } from './latency.js'
 import { runWorkflowBenchmarks, formatWorkflowResults } from './workflow.js'
-import { runComparisonBenchmarks, formatComparisonResults } from './comparison.js'
 
 const W = 56 // box width (inner)
 
@@ -71,11 +70,6 @@ async function main() {
   const workflowResults = await runWorkflowBenchmarks(10)
   const workflowFormatted = formatWorkflowResults(workflowResults)
 
-  // --- Comparison ---
-  console.log(' Running comparison benchmarks...')
-  const comparisonResults = await runComparisonBenchmarks(1000)
-  const comparisonFormatted = formatComparisonResults(comparisonResults)
-
   // --- Output report ---
   console.log('')
   console.log(boxTop())
@@ -87,7 +81,6 @@ async function main() {
   console.log(boxSection('Throughput (SQLite :memory:)', throughputSummary))
   console.log(boxSection('Latency (1K samples)', latencyFormatted))
   console.log(boxSection('Workflow Execution', workflowFormatted))
-  console.log(boxSection('Comparison', comparisonFormatted))
 
   console.log(boxBot())
   console.log('')

@@ -339,4 +339,4 @@ q.use(postgres({
 - Read the [Architecture Guide](architecture.md) to understand the kernel, middleware pipeline, and plugin system.
 - Browse [Plugin Guides](plugins/) for detailed configuration of every plugin.
 - Check the [API Reference](api-reference.md) for the full PsyQueue API.
-- See the [Comparison Guide](comparison.md) for how PsyQueue stacks up against BullMQ, Celery, and Temporal.
+- See the [Comparison Guide](comparison.md) for how PsyQueue stacks up against BullMQ, pg-boss, Graphile Worker, Temporal and Inngest.
