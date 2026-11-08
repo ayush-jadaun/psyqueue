@@ -1,26 +1,28 @@
-import { describe, it, expect, beforeEach, afterEach, beforeAll } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { Pool } from 'pg'
 import { PostgresBackendAdapter, serializeJobParams, deserializeJobRow } from '../src/adapter.js'
 import type { Job, JobStatus } from '@psyqueue/core'
 
 // ─── Availability check ───────────────────────────────────────────────────────
 
-let pgAvailable = false
-
-beforeAll(async () => {
+// Must resolve at module load: describe.skipIf() is evaluated at collection
+// time, before any beforeAll hook runs.
+async function checkPostgres(): Promise<boolean> {
+  const pool = new Pool({
+    connectionString: 'postgres://psyqueue:psyqueue@localhost:5432/psyqueue_test',
+    connectionTimeoutMillis: 1000,
+  })
   try {
-    const pool = new Pool({
-      connectionString: 'postgres://psyqueue:psyqueue@localhost:5432/psyqueue_test',
-      connectionTimeoutMillis: 1000,
-    })
     const client = await pool.connect()
     client.release()
-    await pool.end()
-    pgAvailable = true
+    return true
   } catch {
-    // Postgres not available — real DB tests will be skipped
+    return false // Postgres not available — real DB tests will be skipped
+  } finally {
+    await pool.end()
   }
-})
+}
+const pgAvailable = await checkPostgres()
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
