@@ -68,7 +68,7 @@ Key points:
 
 ## Production Worker Mode
 
-For production use, `startWorker()` launches a continuous worker pool that automatically dequeues and processes jobs. It uses blocking reads (BRPOPLPUSH) for Redis backends and polling for SQLite/Postgres.
+For production use, `startWorker()` launches a continuous worker pool that automatically dequeues and processes jobs. It uses blocking reads (BLMOVE) for Redis backends and polling for SQLite/Postgres.
 
 ```typescript
 import { PsyQueue } from '@psyqueue/core'

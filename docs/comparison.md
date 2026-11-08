@@ -63,22 +63,26 @@ If you need Temporal-grade durability for long-running business processes, use T
 
 ## Benchmark Results
 
-Measured with 5,000 jobs, a no-op handler and concurrency 10, timed from enqueue until every `job:completed` event has fired (so ack overhead is included). PsyQueue uses `startWorker()` with a 1 ms poll interval; BullMQ uses its native `Worker`.
+Run it yourself: `npx tsx benchmarks/fair-vs-bullmq.ts` (needs Redis; set `REDIS_URL` if not on `localhost:6379`).
 
-| Metric | PsyQueue (Redis) | BullMQ (Redis) |
-|--------|-------------------|----------------|
-| **Processing throughput** | **7,989 jobs/sec** | 6,187 jobs/sec |
-| Ratio | **1.29x** | baseline |
+Method: both libraries use their default worker settings. All jobs are enqueued first, then timed from worker start until every job has completed (after ack). Each run uses its own key prefix so leftovers can't inflate counts. The median of 3 runs is reported, alternating which library runs first.
 
-**How to read this:** it is a micro-benchmark of queue overhead. With no-op handlers, the gap comes entirely from Redis round-trips and bookkeeping. With real handlers that do I/O for tens of milliseconds, both queues spend most of their time in your code and the difference shrinks. PsyQueue's 1 ms polling also costs some idle CPU, while BullMQ's blocking commands do not. Run it on your own hardware: `npx tsx benchmarks/comparison.ts`.
+Measured on Windows 11 with Redis 7 in Docker:
 
-### Where the lower overhead comes from
+| Scenario | PsyQueue | BullMQ | Ratio |
+|----------|----------|--------|-------|
+| No-op handler, 10k jobs, concurrency 10 | 5,273 jobs/s | 4,478 jobs/s | 1.18x |
+| 5 ms async work, 4k jobs, concurrency 50 | 3,188 jobs/s | 3,131 jobs/s | 1.02x |
+| 20 ms async work, 2k jobs, concurrency 50 | 1,603 jobs/s | 1,553 jobs/s | 1.03x |
 
-1. **ackAndFetch fusion** -- acks the current job and dequeues the next one in a single Lua script call (2 Redis round-trips per job instead of 3).
-2. **Hybrid list + sorted set** -- default-priority jobs use RPUSH/RPOP lists (O(1)); only prioritized jobs use sorted sets.
-3. **Hash field packing** -- hot fields (id, status, priority, attempt) are individual hash fields; cold fields are packed into one `_ext` JSON blob, cutting per-job hash fields from ~30 to 13.
-4. **Single dequeue loop** -- one loop with semaphore-controlled concurrency and a local job buffer.
-5. **Active set uses SADD/SREM** -- plain set operations instead of ZADD/ZREM for tracking active jobs.
+**How to read this:**
+
+- The no-op row measures pure queue overhead and is noisy: individual runs ranged 4,240–6,124 (PsyQueue) and 4,190–5,464 (BullMQ).
+- With real handler work, both queues are within a few percent of each other. Your handler dominates, not the queue.
+- Both libraries make the same core design choices: a fused "ack + fetch next job" Lua script, a list for normal jobs and a sorted set for priority jobs. Neither has a structural speed advantage.
+- PsyQueue's guarantee against duplicate runs costs nothing per job. It uses one lease-renewal call per worker every `leaseMs / 4` (15 s by default), not a lock per job.
+
+**Bottom line:** performance is on par with BullMQ. Choose PsyQueue for its features and zero-infra start, not for raw speed.
 
 ## When to Choose What
 

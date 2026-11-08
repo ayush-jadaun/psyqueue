@@ -308,8 +308,8 @@ The worker automatically selects the right dequeue strategy based on the backend
 
 **Blocking mode** (Redis -- `supportsBlocking: true`):
 1. Try a non-blocking batch grab first (fast path via `batchDequeue()`).
-2. If the queue is empty, fall back to BRPOPLPUSH (blocking wait) -- the Redis connection blocks until a job arrives or the timeout expires.
-3. When BRPOPLPUSH unblocks, immediately batch-grab more jobs to fill the local buffer.
+2. If the queue is empty, fall back to BLMOVE (blocking wait) -- the Redis connection blocks until a job arrives or the timeout expires.
+3. When BLMOVE unblocks, immediately batch-grab more jobs to fill the local buffer.
 
 **Poll mode** (SQLite, Postgres -- `supportsBlocking: false`):
 - Standard poll with `dequeue()`, sleeping for `pollInterval` ms when the queue is empty.

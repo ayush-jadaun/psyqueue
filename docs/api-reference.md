@@ -190,7 +190,7 @@ Processing flow:
 
 #### `q.startWorker(queue, opts?): void`
 
-Start a continuous worker pool for a queue. Jobs are automatically dequeued and processed using registered handlers. Uses blocking reads (BRPOPLPUSH) for Redis backends, polling for others.
+Start a continuous worker pool for a queue. Jobs are automatically dequeued and processed using registered handlers. Uses blocking reads (BLMOVE) for Redis backends, polling for others.
 
 ```typescript
 q.startWorker('email.send', {
@@ -375,15 +375,18 @@ interface WorkerOpts {
   batchSize?: number
   /** Poll interval for non-blocking backends in ms (default: 50) */
   pollInterval?: number
+  /** Ms a job may go without a heartbeat before another worker reclaims it (default: 60000) */
+  leaseMs?: number
 }
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `concurrency` | `1` | Number of handlers that can run in parallel. The worker uses a semaphore to enforce this limit. |
-| `blockTimeout` | `5000` | For blocking backends (Redis): how long to wait in BRPOPLPUSH before retrying, in ms. |
+| `blockTimeout` | `5000` | For blocking backends (Redis): how long to wait in BLMOVE before retrying, in ms. |
 | `batchSize` | `2 * concurrency` | How many jobs to pre-fetch per Redis call. Higher values reduce round-trips but use more memory. |
 | `pollInterval` | `50` | For non-blocking backends (SQLite, Postgres): sleep duration in ms when the queue is empty. |
+| `leaseMs` | `60000` | Redis: the worker renews the lease on every job it holds every `leaseMs / 4`. If a worker dies, its jobs are reclaimed after `leaseMs`. Jobs that run longer than `leaseMs` are safe while their worker is alive. Raise it if handlers block the event loop with synchronous CPU work for longer than this. |
 
 ### BackoffStrategy
 
@@ -482,7 +485,7 @@ interface BackendAdapter {
 
   // --- Optional methods for high-performance backends ---
 
-  /** Whether this backend supports blocking dequeue (e.g., Redis BRPOPLPUSH) */
+  /** Whether this backend supports blocking dequeue (e.g., Redis BLMOVE) */
   supportsBlocking?: boolean
 
   /** Block until a job is available or timeout expires. Returns empty array on timeout. */

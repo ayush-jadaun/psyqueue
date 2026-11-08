@@ -12,7 +12,7 @@
 - **Zero-infra start** -- `npm install @psyqueue/core @psyqueue/backend-sqlite` and go. No Redis, no Docker.
 - **Everything is a plugin** -- Use only what you need. The kernel is ~500 lines.
 - **Scales with you** -- Start with SQLite, graduate to Redis/Postgres without rewriting code.
-- **Production-grade performance** -- Competitive with BullMQ on Redis. Benchmark suite included — run it yourself.
+- **On par with BullMQ on Redis** -- Fair benchmark included, run it yourself.
 - **Built for SaaS** -- Multi-tenant fair scheduling, per-tenant rate limits, noisy-neighbor protection.
 - **Workflow orchestration** -- DAG workflows with conditional branching and Saga compensation.
 - **Enterprise-ready** -- Circuit breakers, adaptive backpressure, exactly-once delivery, audit logs.
@@ -107,11 +107,15 @@ npx tsx benchmarks/k6/psyqueue-server.ts  # terminal 1
 k6 run benchmarks/k6/load-test.js         # terminal 2
 ```
 
-Key architectural advantages over BullMQ:
-- **Fused `ackAndFetch`** — ack + dequeue in one Redis call (2 round-trips vs 3)
-- **Hybrid list + sorted set** — O(1) dequeue for priority=0 jobs
-- **Hash field packing** — 13 fields vs 30 per HGETALL
-- **Features open-source BullMQ doesn't ship** — saga compensation, multi-tenant fair scheduling, circuit breaker, audit log, job fusion, chaos testing, etc. See [docs/comparison.md](docs/comparison.md).
+Fair head-to-head vs BullMQ (both on defaults, median of 3 runs): `npx tsx benchmarks/fair-vs-bullmq.ts`
+
+| Scenario | PsyQueue | BullMQ |
+|----------|----------|--------|
+| No-op handler, concurrency 10 | 5,273 jobs/s | 4,478 jobs/s |
+| 5 ms async work, concurrency 50 | 3,188 jobs/s | 3,131 jobs/s |
+| 20 ms async work, concurrency 50 | 1,603 jobs/s | 1,553 jobs/s |
+
+In short: on par with BullMQ. Raw queue overhead is slightly lower; with real handler work the two are within a few percent. Pick PsyQueue for its features and zero-infra start, not for speed. Details in [docs/comparison.md](docs/comparison.md#benchmark-results).
 
 ## Architecture
 
